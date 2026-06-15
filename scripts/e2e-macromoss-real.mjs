@@ -133,13 +133,18 @@ async function verifyFreehand(page) {
 }
 
 async function verifyEllipse(page) {
-  const target = chooseSectionTarget(await currentTargets(page));
-  if (!target) throw new Error('No target available for ellipse circle');
   const beforeCount = await annotationCount(page);
   await page.getByTestId('bug-comment').fill('圈选验证：截图标注式椭圆圈选可快速框住区域');
   await setTool(page, 'ellipse');
-  const start = await screenPoint(page, target.captureRect, 0.18, 0.22);
-  const end = await screenPoint(page, target.captureRect, 0.82, 0.78);
+  const natural = await page.locator('[data-testid="canvas-layer"] img').evaluate((node) => ({ width: node.naturalWidth, height: node.naturalHeight }));
+  const targetRect = {
+    x: Math.min(72, natural.width * 0.08),
+    y: Math.min(190, natural.height * 0.22),
+    width: Math.min(760, natural.width * 0.72),
+    height: Math.min(360, natural.height * 0.38)
+  };
+  const start = await screenPoint(page, targetRect, 0.18, 0.22);
+  const end = await screenPoint(page, targetRect, 0.82, 0.78);
   await page.mouse.move(start.x, start.y);
   await page.mouse.down();
   await page.mouse.move(end.x, end.y, { steps: 8 });
@@ -174,6 +179,7 @@ async function verifyQuickSave(page) {
   await page.getByTestId('nav-bugs').click();
   await page.waitForSelector('[data-testid="bug-card"]');
   const detailText = await page.getByTestId('bug-detail').innerText();
+  if (!detailText.includes('快速保存验证')) throw new Error(`Quick save did not prefer latest comment: ${detailText}`);
   if (!detailText.includes('Figma') || !detailText.includes('原始需求')) throw new Error(`Quick save references missing: ${detailText}`);
 }
 

@@ -820,7 +820,7 @@ function DeviceFrame(props: {
             {props.active ? (
               <svg className="mk-overlay" viewBox={`0 0 ${capture.imageSize.width} ${capture.imageSize.height}`}>
                 {props.domTargets.map((target) => props.tool === 'element' ? <rect key={target.id} className="mk-target-rect" x={target.captureRect.x} y={target.captureRect.y} width={target.captureRect.width} height={target.captureRect.height} /> : null)}
-                {props.activeTarget && <rect className="mk-target-active" x={props.activeTarget.captureRect.x} y={props.activeTarget.captureRect.y} width={props.activeTarget.captureRect.width} height={props.activeTarget.captureRect.height} />}
+                {props.activeTarget && ['browse', 'pointer', 'element', 'section'].includes(props.tool) ? <rect className="mk-target-active" x={props.activeTarget.captureRect.x} y={props.activeTarget.captureRect.y} width={props.activeTarget.captureRect.width} height={props.activeTarget.captureRect.height} /> : null}
                 {props.annotations.map((annotation, index) => <AnnotationShape key={annotation.id} annotation={annotation} selected={props.selectedAnnotationIds.includes(annotation.id)} index={index + 1} />)}
                 {props.dragStart ? <circle className="mk-rect-start" cx={props.dragStart.x} cy={props.dragStart.y} r="6" /> : null}
                 {props.rectPreview && (props.rectPreview.width > 2 || props.rectPreview.height > 2) ? (
@@ -1007,8 +1007,11 @@ function completeDraft(draft: DraftBug, target?: DomTarget): DraftBug {
   const comment = draft.comment.trim();
   const type = bugTypeOptions.find((item) => item.value === draft.bugType) ?? bugTypeOptions[0]!;
   const targetLabel = target?.label || target?.text || target?.tagName || '当前标注区域';
-  const title = draft.title.trim() || (comment ? comment.replace(/\s+/g, ' ').slice(0, 44) : `${type.label}：${targetLabel}`.slice(0, 44));
-  const actual = draft.actual.trim() || comment;
+  const currentTitle = draft.title.trim();
+  const currentActual = draft.actual.trim();
+  const autoFilledFromOldComment = Boolean(comment && currentTitle && currentActual && currentTitle === currentActual);
+  const title = autoFilledFromOldComment || !currentTitle ? (comment ? comment.replace(/\s+/g, ' ').slice(0, 44) : `${type.label}：${targetLabel}`.slice(0, 44)) : currentTitle;
+  const actual = autoFilledFromOldComment || !currentActual ? comment : currentActual;
   const expected = draft.expected.trim() || type.expected;
   return { ...draft, title, actual, expected };
 }
