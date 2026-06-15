@@ -1,0 +1,9 @@
+{
+  "routes": [
+    {
+      "path": "/",
+      "sourceId": "SRC-001",
+      "nav": "bootstrap single page"
+    }
+  ]
+}

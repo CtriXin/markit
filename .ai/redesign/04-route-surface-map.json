@@ -1,0 +1,32 @@
+{
+  "schema": "markit.redesign.route_surface_map.v1",
+  "source_reference": "/var/folders/f_/5d2twg6n6jg7wry6_mg4m15c0000gn/T/clipboard-2026-06-15-204322-2FEC7EE0.png",
+  "visual_base": "/Users/xin/auto-skills/installed-skills/open-design/apps/web/src/styles/viewer/core.css",
+  "routes": [
+    {
+      "view": "home",
+      "surface": "URL intake",
+      "checks": ["全中文入口文案", "URL 与 viewport 表单", "最近会话", "功能覆盖说明"]
+    },
+    {
+      "view": "session",
+      "surface": "OpenDesign-like workbench",
+      "checks": ["深色 app chrome", "左侧评论列表", "紧凑 file/tool bar", "浅色 preview canvas", "蓝色 selector/annotation", "右侧评论与点击识别面板"]
+    },
+    {
+      "view": "bugs",
+      "surface": "Bug inbox/detail/export",
+      "checks": ["Bug 列表", "详情编辑", "标注证据", "导出证据", "状态/优先级中文化"]
+    },
+    {
+      "view": "settings",
+      "surface": "Local settings",
+      "checks": ["AI 通道", "隐私说明", "快捷键说明"]
+    }
+  ],
+  "visual_consistency_checks": [
+    "不得出现 warm paper / beige dashboard 作为 Markit app shell",
+    "截图证据中必须出现蓝色选区与深色评论 chrome",
+    "technical terms 可保留 English；普通 UI copy 使用中文"
+  ]
+}

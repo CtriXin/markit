@@ -1,0 +1,20 @@
+{
+  "taskMode": "new-build",
+  "isWebsiteBuild": false,
+  "isNewProject": true,
+  "isExistingImplementationUpdate": false,
+  "hasUiSurface": true,
+  "hasDesignerPrompt": false,
+  "requiresDesigner": true,
+  "hasDesignerGate": true,
+  "hasLongFormWriteEngine": false,
+  "hasGuideArticleSeoOrWordCountRequirement": false,
+  "requiresWriteEngine": false,
+  "estimatedHumanFacingContentChars": 180,
+  "writeEngineThresholdChars": 800,
+  "hasExistingImplementation": false,
+  "frontendBaselineRequired": true,
+  "servingShape": "static-spa + local express api",
+  "siteProfile": "internal-tool",
+  "currentIterationScope": "0.1.0-2.6.0 bootstrap/contracts/capture vertical slice"
+}

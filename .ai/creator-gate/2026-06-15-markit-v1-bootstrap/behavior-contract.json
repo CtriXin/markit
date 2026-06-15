@@ -1,0 +1,14 @@
+{
+  "checks": [
+    {
+      "id": "health-fetch",
+      "sourceId": "SRC-001",
+      "command": "rendered smoke verifies health badge"
+    },
+    {
+      "id": "pixel-probe",
+      "sourceId": "SRC-001",
+      "command": "pnpm probe:pixels"
+    }
+  ]
+}

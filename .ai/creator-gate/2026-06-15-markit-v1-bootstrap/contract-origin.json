@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {
+      "contract": "*",
+      "source": "S1",
+      "sourceOfTruth": "docs/implementation-plan.md"
+    }
+  ],
+  "forbidden": [
+    "rendered DOM as contract source"
+  ]
+}

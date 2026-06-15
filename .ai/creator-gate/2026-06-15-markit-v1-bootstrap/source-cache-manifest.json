@@ -1,0 +1,22 @@
+{
+  "sources": [
+    {
+      "sourceId": "SRC-001",
+      "originalLocation": "docs/implementation-plan.md",
+      "cachedPath": "cache/implementation-plan.md",
+      "retrievedAt": "2026-06-15T18:55:00+08:00",
+      "sha256": "e5bc69b15893098fdf304f1648290dfadfc35e5120b5a328bc6d7dbfbc07073c",
+      "reader": "codex",
+      "status": "cached"
+    },
+    {
+      "sourceId": "SRC-002",
+      "originalLocation": "current chat user correction",
+      "cachedPath": null,
+      "retrievedAt": "2026-06-15T18:55:00+08:00",
+      "sha256": null,
+      "reader": "codex",
+      "status": "recorded"
+    }
+  ]
+}

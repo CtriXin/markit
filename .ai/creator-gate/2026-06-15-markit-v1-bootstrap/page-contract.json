@@ -1,0 +1,17 @@
+{
+  "routes": [
+    {
+      "path": "/",
+      "sourceId": "S1",
+      "requiredText": [
+        "Markit",
+        "Capture UI bugs from any URL"
+      ],
+      "requiredElements": [
+        "url-input",
+        "viewport-select",
+        "health-badge"
+      ]
+    }
+  ]
+}

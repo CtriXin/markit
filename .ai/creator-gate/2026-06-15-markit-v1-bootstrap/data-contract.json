@@ -1,0 +1,14 @@
+{
+  "contracts": [
+    {
+      "id": "health-response",
+      "sourceId": "SRC-001",
+      "fields": [
+        "ok",
+        "name",
+        "version",
+        "time"
+      ]
+    }
+  ]
+}
