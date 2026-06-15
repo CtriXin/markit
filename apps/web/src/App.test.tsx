@@ -11,6 +11,7 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('区块');
     expect(source).toContain('圈选');
     expect(source).toContain('快速保存');
+    expect(source).toContain('撤销标注');
     expect(source).toContain('原始需求链接');
     expect(source).toContain('评论此元素');
     expect(source).toContain('data-testid="url-input"');

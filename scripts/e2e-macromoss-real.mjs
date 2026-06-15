@@ -71,9 +71,13 @@ async function main() {
     result.capabilities.sectionPick = true;
     await screenshot(page, '05-macromoss-section-pick.png');
 
+    await verifyUndoLastAnnotation(page);
+    result.capabilities.undoLastAnnotation = true;
+    await screenshot(page, '06-macromoss-undo.png');
+
     await verifyQuickSave(page);
     result.capabilities.quickSaveWithReferences = true;
-    await screenshot(page, '06-macromoss-quick-save.png');
+    await screenshot(page, '07-macromoss-quick-save.png');
     await page.getByRole('button', { name: '预览' }).click();
     await page.waitForSelector('[data-testid="device-pc"] img');
 
@@ -81,7 +85,7 @@ async function main() {
     await page.waitForSelector('[data-testid="device-mobile"] img');
     await waitIdle(page);
     result.capabilities.optionalDualPreview = true;
-    await screenshot(page, '07-macromoss-dual-optional.png');
+    await screenshot(page, '08-macromoss-dual-optional.png');
 
     result.finishedAt = new Date().toISOString();
     await writeResult();
@@ -181,6 +185,21 @@ async function verifyQuickSave(page) {
   const detailText = await page.getByTestId('bug-detail').innerText();
   if (!detailText.includes('快速保存验证')) throw new Error(`Quick save did not prefer latest comment: ${detailText}`);
   if (!detailText.includes('Figma') || !detailText.includes('原始需求')) throw new Error(`Quick save references missing: ${detailText}`);
+}
+
+async function verifyUndoLastAnnotation(page) {
+  const beforeCount = await annotationCount(page);
+  await page.getByTestId('bug-comment').fill('撤销验证：临时标注应该能用 Z 快速撤销');
+  await setTool(page, 'pin');
+  const target = chooseSectionTarget(await currentTargets(page));
+  if (!target) throw new Error('No target available for undo verification');
+  const point = await screenPoint(page, target.captureRect, 0.52, 0.52);
+  await page.mouse.click(point.x, point.y);
+  await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length > count, beforeCount);
+  await page.keyboard.press('z');
+  await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length === count, beforeCount);
+  const message = await page.locator('.mk-message').last().innerText();
+  if (!message.includes('已撤销最近标注')) throw new Error(`Undo message missing: ${message}`);
 }
 
 function chooseLinkTarget(targets, tried) {

@@ -142,6 +142,9 @@ export function App() {
       } else if (key === 'a') {
         event.preventDefault();
         void saveBug();
+      } else if (key === 'z') {
+        event.preventDefault();
+        void undoLastAnnotation();
       } else if (key === 'f') {
         event.preventDefault();
         setZoomMode('fit');
@@ -410,6 +413,16 @@ export function App() {
     if (lastAnnotationIdRef.current === id) lastAnnotationIdRef.current = '';
     if (selectedBugId) await loadBugDetail(selectedBugId);
     await refreshBugs();
+  }
+
+  async function undoLastAnnotation() {
+    const id = selectedAnnotationIds.at(-1) || lastAnnotationIdRef.current || annotations.at(-1)?.id;
+    if (!id) {
+      setMessage('没有可撤销的标注。');
+      return;
+    }
+    await deleteAnnotation(id);
+    setMessage('已撤销最近标注。');
   }
 
   async function saveBug() {
@@ -705,6 +718,7 @@ export function App() {
               <div className="mk-toolbar-group mk-capture-actions">
                 <button data-testid="capture-viewport" onClick={() => createCapture('viewport')}>截取视口</button>
                 <button data-testid="capture-fullpage" onClick={() => createCapture('fullPage')}>整页截图</button>
+                <button data-testid="undo-annotation" onClick={undoLastAnnotation} disabled={!annotations.length}>撤销标注 <small>Z</small></button>
                 <button data-testid="scroll-down" onClick={() => runAction('scroll', { delta: { x: 0, y: 520 } })}>向下滚动</button>
               </div>
               <div className="mk-toolbar-group mk-input-actions">
@@ -896,7 +910,7 @@ function BugPanel(props: { draft: DraftBug; setDraft: Dispatch<SetStateAction<Dr
           <label>Figma 或设计图链接<input data-testid="design-url" type="url" value={props.draft.designUrl} onChange={(event) => update('designUrl', event.currentTarget.value)} placeholder="Figma / 对比截图 URL" /></label>
         </details>
         <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>整理描述（{props.aiStatus.provider}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>快速保存</button></div>
-        <small>快捷：1/2/3/4 设 P0/P1/P2/P3，A 快速保存，O 圈选，D 自由画。</small>
+        <small>快捷：1/2/3/4 设 P0/P1/P2/P3，A 快速保存，Z 撤销标注，O 圈选，D 自由画。</small>
         {!props.aiStatus.enabled ? <small>{props.aiStatus.reason}</small> : null}
       </section>
       <section className="mk-panel-section mk-target-card">
@@ -976,7 +990,7 @@ function BugDetailPanel({ detail, patchBug, exportBug }: { detail: BugDetail | u
 }
 
 function Settings({ aiStatus }: { aiStatus: { enabled: boolean; provider: string; reason?: string } }) {
-  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / 1-4 优先级 / Cmd+S 保存</dd></dl></section>;
+  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / Z 撤销标注 / 1-4 优先级 / Cmd+S 保存</dd></dl></section>;
 }
 
 function AnnotationShape({ annotation, selected, index }: { annotation: Annotation; selected: boolean; index: number }) {
