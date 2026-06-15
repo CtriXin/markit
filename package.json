@@ -1,0 +1,29 @@
+{
+  "name": "markit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "concurrently -n server,web -c teal,blue \"pnpm --filter @markit/server dev\" \"pnpm --filter @markit/web dev\"",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "build": "pnpm -r --if-present build",
+    "probe:pixels": "pnpm --filter @markit/server probe:pixels",
+    "e2e:tongzhang-er": "node scripts/e2e-tongzhang-er.mjs",
+    "e2e:public-url": "node scripts/e2e-public-url-smoke.mjs",
+    "e2e:macromoss": "node scripts/e2e-macromoss-real.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "@types/pngjs": "^6.0.5",
+    "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^10.0.3",
+    "playwright": "^1.61.0",
+    "pngjs": "^7.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.9"
+  }
+}

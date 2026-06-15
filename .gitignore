@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+
+# Local runtime data
+.markit/
+.xmem/
+.agent.local/
+.mission/
+.review-hub/
+
+# Playwright / test artifacts
+playwright-report/
+test-results/
+
+# Local system/editor files
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Agent-local notes
+.ai/agent-release-notes.md

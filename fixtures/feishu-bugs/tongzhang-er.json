@@ -1,0 +1,48 @@
+{
+  "source": "simulated-feishu-bug-list",
+  "title": "通胀二",
+  "targetUrl": "http://127.0.0.1:4888/inflation-2.html",
+  "viewport": "移动端 390x844",
+  "bugs": [
+    {
+      "id": "TZ2-001",
+      "severity": "P1",
+      "selectorHint": "[data-testid=mobile-menu]",
+      "title": "移动端菜单按钮弱化到几乎不可见",
+      "actual": "390x844 viewport 下菜单按钮向右偏移且透明度过低，用户难以识别入口。",
+      "expected": "菜单按钮应完整可见，保持可点击状态，并与 header 右侧安全间距对齐。"
+    },
+    {
+      "id": "TZ2-002",
+      "severity": "P1",
+      "selectorHint": "[data-testid=primary-cta]",
+      "title": "主操作按钮在移动端被裁切",
+      "actual": "主操作按钮文案右侧被容器裁切，无法完整阅读。",
+      "expected": "按钮应完整显示“查看国家趋势与方法论”，并可点击跳转到国家趋势区域。"
+    },
+    {
+      "id": "TZ2-003",
+      "severity": "P2",
+      "selectorHint": "[data-testid=chart-label]",
+      "title": "图表 CPI 标签溢出卡片",
+      "actual": "同比 CPI 标签在移动端向右溢出图表卡片，破坏证据截图。",
+      "expected": "标签应在图表卡片内部换行或缩短，不应越界。"
+    },
+    {
+      "id": "TZ2-004",
+      "severity": "P2",
+      "selectorHint": "[data-testid=country-card]",
+      "title": "国家卡片标题过小且间距拥挤",
+      "actual": "德国卡片标题移动端字号过小，行高过紧，影响阅读。",
+      "expected": "卡片标题在移动端应保持至少 18px 字号和舒适行高。"
+    },
+    {
+      "id": "TZ2-005",
+      "severity": "P3",
+      "selectorHint": "[data-testid=country-dropdown]",
+      "title": "国家下拉菜单展开缺少视觉层级",
+      "actual": "选择国家下拉菜单展开后与背景层级弱，边界不明显。",
+      "expected": "下拉菜单应有清晰边框、阴影和足够层级。"
+    }
+  ]
+}

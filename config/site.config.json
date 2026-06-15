@@ -1,0 +1,6 @@
+{
+  "name": "Markit",
+  "profile": "internal-tool",
+  "defaultViewport": "Mobile 390x844",
+  "apiBasePath": "/api"
+}

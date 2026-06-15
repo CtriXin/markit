@@ -1,0 +1,6 @@
+{
+  "servingShape": "static-spa",
+  "localWebOrigin": "http://127.0.0.1:5173",
+  "localApiOrigin": "http://127.0.0.1:4317",
+  "productionDomain": null
+}

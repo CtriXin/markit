@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>通胀二 Fixture</title>
+    <style>
+      :root { --ink:#1f1c18; --muted:#766f64; --accent:#0f766e; --danger:#e5484d; --paper:#f4f1ea; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 1600px; font-family: Arial, sans-serif; color: var(--ink); background: var(--paper); }
+      header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: 18px 26px; background: #fffaf0; border-bottom: 1px solid #ded4c3; }
+      nav { display: flex; gap: 18px; }
+      .hero { display: grid; grid-template-columns: 1fr 340px; gap: 28px; padding: 42px 26px; }
+      .hero h1 { margin: 0; font-size: clamp(38px, 8vw, 76px); letter-spacing: -0.08em; line-height: .9; }
+      .hero p { color: var(--muted); font-size: 18px; }
+      .cta { display: inline-flex; margin-top: 12px; padding: 13px 18px; border-radius: 999px; background: var(--accent); color: #fff; text-decoration: none; }
+      .panel { border: 1px solid #ded4c3; border-radius: 18px; padding: 18px; background: #fffaf7; box-shadow: 0 18px 40px rgba(31,28,24,.08); }
+      .chart { height: 260px; position: relative; overflow: hidden; }
+      .bar { position: absolute; bottom: 30px; width: 46px; background: var(--accent); border-radius: 10px 10px 0 0; }
+      .bar:nth-child(1) { left: 16px; height: 80px; }
+      .bar:nth-child(2) { left: 86px; height: 130px; }
+      .bar:nth-child(3) { left: 156px; height: 190px; }
+      .bar:nth-child(4) { left: 226px; height: 228px; background: var(--danger); }
+      .chart-label { position:absolute; right:-24px; top:16px; color:var(--danger); font-weight:700; white-space:nowrap; }
+      .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 0 26px 60px; }
+      .card { min-height: 180px; border: 1px solid #ded4c3; border-radius: 18px; padding: 18px; background:#fffaf7; }
+      .card small { color: var(--muted); }
+      .country-select { margin: 0 26px 24px; padding: 18px; border: 1px solid #ded4c3; border-radius: 18px; background:#fffaf7; }
+      .dropdown { position: relative; display: inline-block; }
+      .dropdown button { min-width: 220px; padding: 12px; border: 1px solid #c8bda8; border-radius: 12px; background:#fff; }
+      .dropdown-menu { display: none; position: absolute; top: 42px; left: 0; width: 220px; border: 1px solid #c8bda8; background:#fff; box-shadow: 0 12px 24px rgba(0,0,0,.12); }
+      .dropdown.open .dropdown-menu { display:block; }
+      .dropdown-menu a { display:block; padding: 10px; color: var(--ink); text-decoration: none; }
+      form { display: grid; gap: 10px; padding: 0 26px 80px; max-width: 520px; }
+      input { min-height: 42px; border: 1px solid #c8bda8; border-radius: 10px; padding: 0 12px; }
+      @media (max-width: 640px) {
+        header { padding: 14px 12px; }
+        nav { display: none; }
+        [data-testid="mobile-menu"] { transform: translateX(44px); opacity: .2; }
+        .hero { display:block; padding: 28px 14px; }
+        .cta { position: relative; left: 112px; max-width: 150px; white-space: nowrap; overflow: hidden; }
+        .panel { margin-top: 18px; }
+        .cards { grid-template-columns: 1fr; padding: 0 14px 40px; gap: 8px; }
+        .card { min-height: 120px; padding: 10px; }
+        .card h2 { font-size: 15px; line-height: 1; }
+        .country-select { margin: 0 14px 18px; }
+        .chart-label { right: -94px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>通胀观察</strong>
+      <nav><a href="#overview">概览</a><a href="#countries">国家</a><a href="#methodology">方法论</a></nav>
+      <button data-testid="mobile-menu" aria-label="打开移动端菜单">☰ 菜单</button>
+    </header>
+    <main>
+      <section class="hero" id="overview">
+        <div>
+          <h1>全球通胀压力观察</h1>
+          <p>用于模拟飞书 bug 列表“通胀二”的 UI 回归页面。</p>
+          <a class="cta" data-testid="primary-cta" href="#countries">查看国家趋势与方法论</a>
+        </div>
+        <aside class="panel chart" aria-label="Inflation chart">
+          <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+          <span class="chart-label" data-testid="chart-label">同比 CPI +8.7% 标签溢出</span>
+        </aside>
+      </section>
+      <section class="country-select" id="countries">
+        <div class="dropdown" data-testid="country-dropdown"><button type="button" onclick="this.parentElement.classList.toggle('open')">选择国家</button><div class="dropdown-menu"><a href="#de">德国</a><a href="#fr">法国</a><a href="#jp">日本</a></div></div>
+      </section>
+      <section class="cards">
+        <article class="card" data-testid="country-card"><small>德国</small><h2>能源价格卡片标题在移动端过小且间距拥挤</h2><p>当前值：8.7%</p></article>
+        <article class="card"><small>法国</small><h2>食品价格指数</h2><p>当前值：6.2%</p></article>
+        <article class="card"><small>日本</small><h2>核心 CPI</h2><p>当前值：3.1%</p></article>
+      </section>
+      <form id="methodology"><label>反馈输入 <input data-testid="feedback-input" placeholder="输入备注" /></label></form>
+    </main>
+  </body>
+</html>

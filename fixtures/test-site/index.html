@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Markit Fixture</title>
+    <style>
+      html, body { margin: 0; font-family: Arial, sans-serif; min-height: 1400px; }
+      header { position: sticky; top: 0; display: flex; gap: 16px; align-items: center; padding: 16px; background: #fff7ed; border-bottom: 1px solid #fed7aa; }
+      main { padding: 24px; }
+      .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+      .card { min-height: 140px; padding: 16px; border: 1px solid #d6d3d1; border-radius: 12px; }
+      #probe-box { position: absolute; left: 23px; top: 220px; width: 137px; height: 91px; background: #ff0000; }
+      @media (max-width: 640px) { .cards { grid-template-columns: 1fr; } nav { display: none; } }
+    </style>
+  </head>
+  <body>
+    <header>
+      <button data-testid="mobile-menu" aria-label="Open menu">Menu</button>
+      <strong>Fixture</strong>
+      <nav><a href="countries.html">Countries</a><a href="methodology.html">Methodology</a></nav>
+      <button data-testid="countries-toggle" aria-expanded="false">Countries</button>
+    </header>
+    <main>
+      <h1>Fixture Home</h1>
+      <p>This page contains stable targets for Markit capture and action tests.</p>
+      <label>Feedback <input data-testid="feedback-input" placeholder="Type here" /></label>
+      <section class="cards" aria-label="Country cards">
+        <article class="card"><h2>Germany</h2><p>Stable card content.</p></article>
+        <article class="card"><h2>France</h2><p>Stable card content.</p></article>
+        <article class="card"><h2>Japan</h2><p>Stable card content.</p></article>
+      </section>
+      <div id="probe-box" aria-hidden="true"></div>
+    </main>
+  </body>
+</html>
