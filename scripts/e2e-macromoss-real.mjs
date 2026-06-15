@@ -63,15 +63,25 @@ async function main() {
     result.capabilities.freehandCircle = true;
     await screenshot(page, '03-macromoss-circle-freehand.png');
 
+    await verifyEllipse(page);
+    result.capabilities.ellipseCircle = true;
+    await screenshot(page, '04-macromoss-circle-ellipse.png');
+
     await verifySectionPick(page);
     result.capabilities.sectionPick = true;
-    await screenshot(page, '04-macromoss-section-pick.png');
+    await screenshot(page, '05-macromoss-section-pick.png');
+
+    await verifyQuickSave(page);
+    result.capabilities.quickSaveWithReferences = true;
+    await screenshot(page, '06-macromoss-quick-save.png');
+    await page.getByRole('button', { name: '预览' }).click();
+    await page.waitForSelector('[data-testid="device-pc"] img');
 
     await page.getByTestId('preview-dual').click();
     await page.waitForSelector('[data-testid="device-mobile"] img');
     await waitIdle(page);
     result.capabilities.optionalDualPreview = true;
-    await screenshot(page, '05-macromoss-dual-optional.png');
+    await screenshot(page, '07-macromoss-dual-optional.png');
 
     result.finishedAt = new Date().toISOString();
     await writeResult();
@@ -122,6 +132,23 @@ async function verifyFreehand(page) {
   await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length > count, beforeCount);
 }
 
+async function verifyEllipse(page) {
+  const target = chooseSectionTarget(await currentTargets(page));
+  if (!target) throw new Error('No target available for ellipse circle');
+  const beforeCount = await annotationCount(page);
+  await page.getByTestId('bug-comment').fill('圈选验证：截图标注式椭圆圈选可快速框住区域');
+  await setTool(page, 'ellipse');
+  const start = await screenPoint(page, target.captureRect, 0.18, 0.22);
+  const end = await screenPoint(page, target.captureRect, 0.82, 0.78);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length > count, beforeCount);
+  const lastText = await page.locator('.mk-ann-list article').last().innerText();
+  if (!/圈选/.test(lastText)) throw new Error(`Last annotation is not ellipse: ${lastText}`);
+}
+
 async function verifySectionPick(page) {
   const target = chooseSectionTarget(await currentTargets(page));
   if (!target) throw new Error('No section-like target available');
@@ -134,6 +161,20 @@ async function verifySectionPick(page) {
   const lastText = await page.locator('.mk-ann-list article').last().innerText();
   if (!/区块/.test(lastText)) throw new Error(`Last annotation is not section: ${lastText}`);
   result.sectionTarget = { selector: target.selector, label: target.label, tagName: target.tagName };
+}
+
+async function verifyQuickSave(page) {
+  await page.getByTestId('bug-comment').fill('快速保存验证：只写一句话也能生成标题、实际表现和默认期望');
+  await page.getByTestId('bug-type-chips').getByRole('button', { name: '样式不符' }).click();
+  await page.locator('.mk-reference-fields summary').click();
+  await page.getByTestId('requirement-url').fill('https://example.com/requirement');
+  await page.getByTestId('design-url').fill('https://figma.com/file/markit-smoke');
+  await page.getByTestId('save-bug').click();
+  await page.waitForFunction(() => /已保存 Bug/.test(document.body.innerText));
+  await page.getByTestId('nav-bugs').click();
+  await page.waitForSelector('[data-testid="bug-card"]');
+  const detailText = await page.getByTestId('bug-detail').innerText();
+  if (!detailText.includes('Figma') || !detailText.includes('原始需求')) throw new Error(`Quick save references missing: ${detailText}`);
 }
 
 function chooseLinkTarget(targets, tried) {

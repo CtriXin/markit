@@ -24,9 +24,9 @@ export function bugsRouter(context: ServerContext): Router {
     const id = `bug_${randomUUID()}`;
     const ts = nowIso();
     context.database.db.run(
-      `INSERT INTO bugs (id, session_id, title, actual, expected, severity, status, source_url, final_url, primary_capture_id, tags_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, String(req.body.sessionId), String(req.body.title), String(req.body.actual), String(req.body.expected), String(req.body.severity), String(req.body.status ?? 'draft'), String(req.body.sourceUrl), String(req.body.finalUrl), req.body.primaryCaptureId ? String(req.body.primaryCaptureId) : null, JSON.stringify(req.body.tags ?? []), ts, ts]
+      `INSERT INTO bugs (id, session_id, title, actual, expected, severity, status, source_url, final_url, primary_capture_id, tags_json, references_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, String(req.body.sessionId), String(req.body.title), String(req.body.actual), String(req.body.expected), String(req.body.severity), String(req.body.status ?? 'draft'), String(req.body.sourceUrl), String(req.body.finalUrl), req.body.primaryCaptureId ? String(req.body.primaryCaptureId) : null, JSON.stringify(req.body.tags ?? []), JSON.stringify(normalizeReferences(req.body.references)), ts, ts]
     );
     if (Array.isArray(req.body.annotationIds)) {
       req.body.annotationIds.forEach((annotationId: unknown, index: number) => addRelation(context, id, String(annotationId), index));
@@ -44,7 +44,7 @@ export function bugsRouter(context: ServerContext): Router {
     const bug = first(context.database.db, 'SELECT * FROM bugs WHERE id = ?', [id]);
     if (!bug) throw new MarkitHttpError(404, 'bug_not_found', 'Bug not found');
     context.database.db.run(
-      `UPDATE bugs SET title = ?, actual = ?, expected = ?, severity = ?, status = ?, tags_json = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE bugs SET title = ?, actual = ?, expected = ?, severity = ?, status = ?, tags_json = ?, references_json = ?, updated_at = ? WHERE id = ?`,
       [
         String(req.body?.title ?? bug.title),
         String(req.body?.actual ?? bug.actual),
@@ -52,6 +52,7 @@ export function bugsRouter(context: ServerContext): Router {
         String(req.body?.severity ?? bug.severity),
         String(req.body?.status ?? bug.status),
         JSON.stringify(req.body?.tags ?? parseJson(bug.tags_json, [])),
+        JSON.stringify(req.body?.references ? normalizeReferences(req.body.references) : parseJson(bug.references_json, [])),
         nowIso(),
         id
       ]
@@ -91,6 +92,18 @@ function validateBugInput(body: unknown) {
       throw new MarkitHttpError(400, 'bug_validation_failed', `Missing required field: ${key}`);
     }
   }
+}
+
+function normalizeReferences(value: unknown): Array<{ kind: string; url: string; label?: string }> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (item && typeof item === 'object' ? item : {}) as Record<string, unknown>)
+    .filter((item) => typeof item.url === 'string' && /^https?:\/\//i.test(item.url.trim()))
+    .map((item) => ({
+      kind: String(item.kind ?? 'other').slice(0, 40),
+      url: String(item.url).trim(),
+      ...(item.label ? { label: String(item.label).slice(0, 80) } : {})
+    }));
 }
 
 function addRelation(context: ServerContext, bugId: string, annotationId: string, sortOrder: number) {
@@ -153,7 +166,10 @@ async function exportBug(context: ServerContext, id: string) {
 
 function renderMarkdown(detail: { bug: ReturnType<typeof mapBug>; annotations: unknown[] }, groups: Map<string, Row[]>): string {
   const bug = detail.bug;
-  return `# ${bug.title}\n\n- Severity: ${bug.severity}\n- Status: ${bug.status}\n- Source URL: ${bug.sourceUrl}\n- Final URL: ${bug.finalUrl}\n\n## Actual\n\n${bug.actual}\n\n## Expected\n\n${bug.expected}\n\n## Annotations\n\n${[...groups.entries()].map(([captureId, annotations]) => `### ${captureId}\n\n${annotations.map((annotation) => `- ${annotation.id}: ${annotation.note}`).join('\n')}`).join('\n\n')}\n`;
+  const references = bug.references.length
+    ? `\n## References\n\n${bug.references.map((reference) => `- ${reference.label ?? reference.kind}: ${reference.url}`).join('\n')}\n`
+    : '';
+  return `# ${bug.title}\n\n- Severity: ${bug.severity}\n- Status: ${bug.status}\n- Source URL: ${bug.sourceUrl}\n- Final URL: ${bug.finalUrl}\n- Tags: ${bug.tags.join(', ') || 'none'}\n\n## Actual\n\n${bug.actual}\n\n## Expected\n\n${bug.expected}\n${references}\n## Annotations\n\n${[...groups.entries()].map(([captureId, annotations]) => `### ${captureId}\n\n${annotations.map((annotation) => `- ${annotation.id}: ${annotation.note}`).join('\n')}`).join('\n\n')}\n`;
 }
 
 function drawAnnotation(png: PNG, annotation: Row) {
@@ -161,6 +177,10 @@ function drawAnnotation(png: PNG, annotation: Row) {
   const rect = geometry.captureRect;
   if (String(annotation.kind) === 'freehand' && geometry.paths) {
     for (const path of geometry.paths) for (const point of path) putDot(png, Math.round(point.x), Math.round(point.y), [229, 72, 77, 255], 2);
+    return;
+  }
+  if (String(annotation.kind) === 'ellipse') {
+    drawEllipse(png, rect, [229, 72, 77, 255]);
     return;
   }
   const x1 = Math.max(0, Math.round(rect.x));
@@ -176,6 +196,18 @@ function drawAnnotation(png: PNG, annotation: Row) {
     putPixel(png, x2, y, [229, 72, 77, 255]);
   }
   if (String(annotation.kind) === 'pin') putDot(png, x1, y1, [245, 158, 11, 255], 5);
+}
+
+function drawEllipse(png: PNG, rect: { x: number; y: number; width: number; height: number }, rgba: [number, number, number, number]) {
+  const rx = Math.max(4, rect.width / 2);
+  const ry = Math.max(4, rect.height / 2);
+  const cx = rect.x + rx;
+  const cy = rect.y + ry;
+  const steps = Math.max(48, Math.ceil(Math.max(rx, ry) * 2));
+  for (let index = 0; index <= steps; index += 1) {
+    const theta = (Math.PI * 2 * index) / steps;
+    putDot(png, Math.round(cx + Math.cos(theta) * rx), Math.round(cy + Math.sin(theta) * ry), rgba, 2);
+  }
 }
 
 async function writeCrop(png: PNG, annotation: Row, path: string) {

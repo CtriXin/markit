@@ -110,5 +110,12 @@ CREATE INDEX IF NOT EXISTS idx_annotations_capture_id ON annotations(capture_id)
 CREATE INDEX IF NOT EXISTS idx_bugs_session_id ON bugs(session_id);
 CREATE INDEX IF NOT EXISTS idx_ai_jobs_session_id ON ai_jobs(session_id);
 `
+  },
+  {
+    version: 2,
+    name: 'bug_references',
+    sql: `
+ALTER TABLE bugs ADD COLUMN references_json TEXT NOT NULL DEFAULT '[]';
+`
   }
 ];

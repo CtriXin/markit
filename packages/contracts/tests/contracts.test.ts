@@ -94,6 +94,7 @@ describe('core DTO contracts', () => {
       finalUrl: 'https://example.com/home',
       primaryCaptureId: 'cap_1',
       tags: [],
+      references: [{ kind: 'design', url: 'https://figma.com/file/mock', label: 'Figma' }],
       createdAt: now,
       updatedAt: now
     }).severity).toBe('P1');

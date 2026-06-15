@@ -2,7 +2,7 @@ import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState, type CSS
 
 type HealthState = { kind: 'loading' } | { kind: 'ok'; version: string } | { kind: 'error'; message: string };
 type View = 'home' | 'session' | 'bugs' | 'settings';
-type Tool = 'browse' | 'pointer' | 'pin' | 'rect' | 'freehand' | 'element' | 'section';
+type Tool = 'browse' | 'pointer' | 'pin' | 'rect' | 'ellipse' | 'freehand' | 'element' | 'section';
 type DeviceKey = 'pc' | 'mobile';
 type ZoomMode = 'fit' | 'manual';
 type PreviewMode = 'single' | 'dual';
@@ -14,10 +14,11 @@ type Rect = { x: number; y: number; width: number; height: number };
 type Point = { x: number; y: number };
 type DomTarget = { id: string; selector: string; selectorKind: string; selectorScore: number; label: string; tagName: string; text: string; value?: string; htmlHint: string; captureRect: Rect };
 type Annotation = { id: string; captureId: string; kind: string; geometry: { captureRect: Rect; paths?: Point[][] }; target?: DomTarget; note: string; colorRole: string; sortOrder?: number };
-type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; annotationCount?: number; exportPath?: string; createdAt?: string; updatedAt?: string };
+type BugReference = { kind: 'requirement' | 'design' | 'compare' | 'other'; url: string; label?: string };
+type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; annotationCount?: number; exportPath?: string; createdAt?: string; updatedAt?: string };
 type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[] };
 
-type DraftBug = { title: string; actual: string; expected: string; severity: string; status: string; comment: string };
+type DraftBug = { title: string; actual: string; expected: string; severity: string; status: string; comment: string; bugType: string; requirementUrl: string; designUrl: string };
 
 const viewportOptions: Array<Viewport & { key: string }> = [
   { key: 'desktop-1440', name: '桌面端 1440x900', width: 1440, height: 900, deviceScaleFactor: 1 },
@@ -28,8 +29,8 @@ const viewportOptions: Array<Viewport & { key: string }> = [
   { key: 'mobile-360', name: '移动端 360x800', width: 360, height: 800, deviceScaleFactor: 3, isMobile: true }
 ];
 
-const emptyDraft: DraftBug = { title: '', actual: '', expected: '', severity: 'P2', status: 'draft', comment: '' };
-const toolLabels: Record<Tool, string> = { browse: '浏览', pointer: '指针', pin: '标记', rect: '框选', freehand: '圈画', element: '元素', section: '区块' };
+const emptyDraft: DraftBug = { title: '', actual: '', expected: '', severity: 'P2', status: 'draft', comment: '', bugType: 'layout', requirementUrl: '', designUrl: '' };
+const toolLabels: Record<Tool, string> = { browse: '浏览', pointer: '指针', pin: '标记', rect: '框选', ellipse: '圈选', freehand: '自由画', element: '元素', section: '区块' };
 const statusLabels: Record<string, string> = { draft: '草稿', open: '待处理', resolved: '已解决', wontfix: '不处理' };
 const statusOptions = [
   { value: 'draft', label: '草稿' },
@@ -37,7 +38,16 @@ const statusOptions = [
   { value: 'resolved', label: '已解决' },
   { value: 'wontfix', label: '不处理' }
 ];
-const annotationKindLabels: Record<string, string> = { browse: '浏览', pointer: '指针', pin: '标记', rect: '框选', freehand: '圈画', element: '元素', section: '区块' };
+const annotationKindLabels: Record<string, string> = { browse: '浏览', pointer: '指针', pin: '标记', rect: '框选', ellipse: '圈选', freehand: '自由画', element: '元素', section: '区块' };
+const bugTypeOptions = [
+  { value: 'layout', label: '布局错位', expected: '页面布局应与设计一致，元素完整可见且不遮挡。' },
+  { value: 'visual', label: '样式不符', expected: '颜色、字号、间距、圆角、阴影等视觉样式应与设计稿一致。' },
+  { value: 'interaction', label: '点击无效', expected: '目标区域应可点击，并按预期跳转或触发交互。' },
+  { value: 'copy', label: '文案错误', expected: '页面文案应使用正确语言、大小写和业务描述。' },
+  { value: 'responsive', label: '响应式问题', expected: 'PC 和 Mobile 下内容都应完整展示且可正常操作。' },
+  { value: 'data', label: '数据错误', expected: '页面数据应与需求或接口返回一致。' },
+  { value: 'ad', label: '广告异常', expected: '广告位应按需求展示，不遮挡内容，不缺失关键广告位。' }
+] as const;
 const deviceOrder: DeviceKey[] = ['pc', 'mobile'];
 const deviceLabels: Record<DeviceKey, { title: string; short: string; hint: string }> = {
   pc: { title: 'PC 模拟', short: 'PC', hint: '桌面端真实截图' },
@@ -122,13 +132,22 @@ export function App() {
         return;
       }
       const key = event.key.toLowerCase();
-      const nextTool: Partial<Record<string, Tool>> = { b: 'browse', v: 'pointer', p: 'pin', r: 'rect', d: 'freehand', e: 'element', s: 'section' };
+      const nextTool: Partial<Record<string, Tool>> = { b: 'browse', v: 'pointer', p: 'pin', r: 'rect', o: 'ellipse', d: 'freehand', e: 'element', s: 'section' };
       if (nextTool[key]) {
         event.preventDefault();
         setTool(nextTool[key]!);
       } else if (key === 'c') {
         event.preventDefault();
         void createCapture('viewport');
+      } else if (key === 'a') {
+        event.preventDefault();
+        void saveBug();
+      } else if (key === 'f') {
+        event.preventDefault();
+        setZoomMode('fit');
+      } else if (/^[1-4]$/.test(key)) {
+        event.preventDefault();
+        setDraft((current) => ({ ...current, severity: `P${Number(key) - 1}` }));
       } else if (event.key === 'Escape') {
         cancelDrawing();
       }
@@ -396,22 +415,26 @@ export function App() {
   async function saveBug() {
     if (!session || !capture) return;
     if (pendingAnnotationRef.current) await pendingAnnotationRef.current;
-    if (!draft.title || !draft.actual || !draft.expected || !draft.severity) {
-      setMessage('Bug 必须包含标题、实际表现、期望表现和优先级。');
+    const completedDraft = completeDraft(draft, activeTarget);
+    if (!completedDraft.title || !completedDraft.actual || !completedDraft.expected || !completedDraft.severity) {
+      setMessage('至少填写口语描述，或补齐标题、实际表现、期望表现和优先级。');
       return;
     }
+    setDraft(completedDraft);
     const body = await api<BugDetail>(`/api/bugs`, {
       method: 'POST',
       body: JSON.stringify({
         sessionId: session.id,
-        title: draft.title,
-        actual: draft.actual,
-        expected: draft.expected,
-        severity: draft.severity,
-        status: draft.status,
+        title: completedDraft.title,
+        actual: completedDraft.actual,
+        expected: completedDraft.expected,
+        severity: completedDraft.severity,
+        status: completedDraft.status,
         sourceUrl: session.sourceUrl,
         finalUrl: capture.finalUrl,
         primaryCaptureId: capture.id,
+        tags: [completedDraft.bugType].filter(Boolean),
+        references: referencesFromDraft(completedDraft),
         annotationIds: selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id)
       })
     });
@@ -536,11 +559,11 @@ export function App() {
       if (target) void addAnnotation('section', target.captureRect, target);
       else void addAnnotation('pin', { x: point.x, y: point.y, width: 1, height: 1 });
     }
-    if (tool === 'rect') {
+    if (tool === 'rect' || tool === 'ellipse') {
       const existing = dragStartRef.current;
       rectPointerDownRef.current = point;
       if (existing && distance(existing, point) > 4) {
-        void addAnnotation('rect', normalizeRect(existing, point));
+        void addAnnotation(tool, normalizeRect(existing, point));
         dragStartRef.current = undefined;
         rectPointerDownRef.current = undefined;
         setDragStart(undefined);
@@ -565,7 +588,7 @@ export function App() {
       freehandRef.current = next;
       setFreehand(next);
     }
-    if (tool === 'rect' && dragStartRef.current) setRectPreview(normalizeRect(dragStartRef.current, point));
+    if ((tool === 'rect' || tool === 'ellipse') && dragStartRef.current) setRectPreview(normalizeRect(dragStartRef.current, point));
   }
 
   function onCanvasWheel(event: ReactWheelEvent<HTMLElement>) {
@@ -585,9 +608,9 @@ export function App() {
 
   function onCanvasPointerUp(event: PointerEvent<HTMLElement>) {
     const point = capturePoint(event);
-    if (tool === 'rect' && dragStartRef.current && rectPointerDownRef.current) {
+    if ((tool === 'rect' || tool === 'ellipse') && dragStartRef.current && rectPointerDownRef.current) {
       if (distance(rectPointerDownRef.current, point) > 4) {
-        void addAnnotation('rect', normalizeRect(dragStartRef.current, point));
+        void addAnnotation(tool, normalizeRect(dragStartRef.current, point));
         dragStartRef.current = undefined;
         setDragStart(undefined);
         setRectPreview(undefined);
@@ -677,7 +700,7 @@ export function App() {
 	                {deviceOrder.map((device) => <button data-testid={`activate-${device}`} key={device} disabled={Boolean(busy)} className={activeDevice === device ? 'is-active' : ''} onClick={() => activateOrCreateDevice(device)}>{deviceLabels[device].short}</button>)}
               </div>
               <div className="mk-toolbar-group mk-tool-group">
-                {(['browse', 'pointer', 'pin', 'rect', 'freehand', 'element', 'section'] as Tool[]).map((item) => <button data-testid={`tool-${item}`} key={item} className={tool === item ? 'is-active' : ''} onClick={() => setTool(item)}><span>{toolLabels[item]}</span><small>{shortcutForTool(item)}</small></button>)}
+                {(['browse', 'pointer', 'pin', 'rect', 'ellipse', 'freehand', 'element', 'section'] as Tool[]).map((item) => <button data-testid={`tool-${item}`} key={item} className={tool === item ? 'is-active' : ''} onClick={() => setTool(item)}><span>{toolLabels[item]}</span><small>{shortcutForTool(item)}</small></button>)}
               </div>
               <div className="mk-toolbar-group mk-capture-actions">
                 <button data-testid="capture-viewport" onClick={() => createCapture('viewport')}>截取视口</button>
@@ -800,7 +823,11 @@ function DeviceFrame(props: {
                 {props.activeTarget && <rect className="mk-target-active" x={props.activeTarget.captureRect.x} y={props.activeTarget.captureRect.y} width={props.activeTarget.captureRect.width} height={props.activeTarget.captureRect.height} />}
                 {props.annotations.map((annotation, index) => <AnnotationShape key={annotation.id} annotation={annotation} selected={props.selectedAnnotationIds.includes(annotation.id)} index={index + 1} />)}
                 {props.dragStart ? <circle className="mk-rect-start" cx={props.dragStart.x} cy={props.dragStart.y} r="6" /> : null}
-                {props.rectPreview && (props.rectPreview.width > 2 || props.rectPreview.height > 2) ? <rect className="mk-ann-preview" x={props.rectPreview.x} y={props.rectPreview.y} width={Math.max(props.rectPreview.width, 1)} height={Math.max(props.rectPreview.height, 1)} /> : null}
+                {props.rectPreview && (props.rectPreview.width > 2 || props.rectPreview.height > 2) ? (
+                  props.tool === 'ellipse'
+                    ? <ellipse className="mk-ann-preview" cx={props.rectPreview.x + Math.max(props.rectPreview.width, 1) / 2} cy={props.rectPreview.y + Math.max(props.rectPreview.height, 1) / 2} rx={Math.max(props.rectPreview.width, 1) / 2} ry={Math.max(props.rectPreview.height, 1) / 2} />
+                    : <rect className="mk-ann-preview" x={props.rectPreview.x} y={props.rectPreview.y} width={Math.max(props.rectPreview.width, 1)} height={Math.max(props.rectPreview.height, 1)} />
+                ) : null}
                 {props.freehand.length > 1 ? <polyline className="mk-ann-freehand" points={props.freehand.map((p) => `${p.x},${p.y}`).join(' ')} /> : null}
               </svg>
             ) : null}
@@ -838,7 +865,7 @@ function Home(props: { url: string; setUrl: (value: string) => void; viewportKey
         </section>
         <section>
               <h2>覆盖能力</h2>
-              <div className="mk-coverage"><span>真实 URL</span><span>单端默认 / 双端可选</span><span>点击 / 滚动 / 输入</span><span>标记 / 框选 / 圈画 / 元素 / 区块</span><span>Bug 详情 + 证据导出</span><span>AI 描述整理</span></div>
+              <div className="mk-coverage"><span>真实 URL</span><span>单端默认 / 双端可选</span><span>点击 / 滚动 / 输入</span><span>标记 / 框选 / 圈选 / 自由画 / 元素 / 区块</span><span>少填字段快速保存</span><span>需求/Figma 引用</span><span>AI 描述整理</span></div>
         </section>
       </div>
     </section>
@@ -847,11 +874,14 @@ function Home(props: { url: string; setUrl: (value: string) => void; viewportKey
 
 function BugPanel(props: { draft: DraftBug; setDraft: Dispatch<SetStateAction<DraftBug>>; annotations: Annotation[]; selectedAnnotationIds: string[]; setSelectedAnnotationIds: Dispatch<SetStateAction<string[]>>; saveBug: () => void; normalizeBug: () => void; aiStatus: { enabled: boolean; provider: string; reason?: string }; activeTarget: DomTarget | undefined; lastPoint: Point | undefined; session: Session; capture: Capture; updateAnnotation: (id: string, patch: Partial<Annotation>) => Promise<void>; deleteAnnotation: (id: string) => Promise<void> }) {
   const update = (key: keyof DraftBug, value: string) => props.setDraft((current) => ({ ...current, [key]: value }));
-  const canSave = Boolean(props.draft.title && props.draft.actual && props.draft.expected && props.draft.severity);
+  const canSave = Boolean((props.draft.title && props.draft.actual && props.draft.expected && props.draft.severity) || props.draft.comment.trim());
   return (
     <div className="mk-bug-panel">
       <section className="mk-panel-section mk-draft-card">
         <h2>评论此元素</h2>
+        <div className="mk-quick-group" data-testid="bug-type-chips">
+          {bugTypeOptions.map((item) => <button type="button" key={item.value} className={props.draft.bugType === item.value ? 'is-active' : ''} onClick={() => update('bugType', item.value)}>{item.label}</button>)}
+        </div>
         <label>标题<input data-testid="bug-title" value={props.draft.title} onChange={(event) => update('title', event.currentTarget.value)} /></label>
         <div className="mk-two-col">
           <label>优先级<select data-testid="bug-severity" value={props.draft.severity} onChange={(event) => update('severity', event.currentTarget.value)}><option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></label>
@@ -859,8 +889,14 @@ function BugPanel(props: { draft: DraftBug; setDraft: Dispatch<SetStateAction<Dr
         </div>
         <label>实际表现<textarea data-testid="bug-actual" value={props.draft.actual} onChange={(event) => update('actual', event.currentTarget.value)} /></label>
         <label>期望表现<textarea data-testid="bug-expected" value={props.draft.expected} onChange={(event) => update('expected', event.currentTarget.value)} /></label>
-        <label>口语描述<textarea data-testid="bug-comment" value={props.draft.comment} onChange={(event) => update('comment', event.currentTarget.value)} placeholder="评论此元素：这里按钮被遮挡，应该完整可见并且能点击" /></label>
-        <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>整理描述（{props.aiStatus.provider}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>保存 Bug</button></div>
+        <label>口语描述<textarea data-testid="bug-comment" value={props.draft.comment} onChange={(event) => update('comment', event.currentTarget.value)} placeholder="少填版：这里只要写一句问题，比如“Mobile 下拉最后一行被截断”" /></label>
+        <details className="mk-reference-fields">
+          <summary>引用 / 对比（可选）</summary>
+          <label>原始需求链接<input data-testid="requirement-url" type="url" value={props.draft.requirementUrl} onChange={(event) => update('requirementUrl', event.currentTarget.value)} placeholder="飞书需求 / PRD / issue URL" /></label>
+          <label>Figma 或设计图链接<input data-testid="design-url" type="url" value={props.draft.designUrl} onChange={(event) => update('designUrl', event.currentTarget.value)} placeholder="Figma / 对比截图 URL" /></label>
+        </details>
+        <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>整理描述（{props.aiStatus.provider}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>快速保存</button></div>
+        <small>快捷：1/2/3/4 设 P0/P1/P2/P3，A 快速保存，O 圈选，D 自由画。</small>
         {!props.aiStatus.enabled ? <small>{props.aiStatus.reason}</small> : null}
       </section>
       <section className="mk-panel-section mk-target-card">
@@ -900,9 +936,11 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
           {props.bugs.map((bug) => (
             <article data-testid="bug-card" className={bug.id === props.selectedBugId ? 'mk-bug-card is-active' : 'mk-bug-card'} key={bug.id} onClick={() => props.loadBugDetail(bug.id)}>
               <div className="mk-card-top"><strong>{bug.severity}</strong><span>{statusLabels[bug.status] ?? bug.status}</span></div>
+              <div className="mk-card-tags">{bug.tags?.[0] ? <em>{bugTypeLabel(bug.tags[0])}</em> : null}<small>{safeHost(bug.finalUrl)}</small></div>
               <h2>{bug.title}</h2>
               <p>{bug.actual}</p>
               <span data-testid="bug-annotation-count">{bug.annotationCount ?? 0} 条标注</span>
+              {bug.references?.length ? <span className="mk-reference-count">{bug.references.length} 个引用</span> : null}
               <button data-testid="export-evidence" onClick={(event) => { event.stopPropagation(); props.exportBug(bug.id); }}>导出证据</button>
               {bug.exportPath ? <small>{bug.exportPath}</small> : null}
             </article>
@@ -931,13 +969,14 @@ function BugDetailPanel({ detail, patchBug, exportBug }: { detail: BugDetail | u
       <label>期望表现<textarea value={edit.expected} onChange={(event) => setEdit((current) => current ? { ...current, expected: event.currentTarget.value } : current)} /></label>
       <button onClick={() => patchBug(detail.bug.id, edit)}>保存详情修改</button>
       <dl className="mk-detail-meta"><dt>来源 URL</dt><dd>{detail.bug.sourceUrl}</dd><dt>最终 URL</dt><dd>{detail.bug.finalUrl}</dd><dt>导出路径</dt><dd>{detail.bug.exportPath || '尚未导出'}</dd></dl>
+      {detail.bug.references.length ? <section className="mk-detail-evidence"><h3>引用 / 对比</h3>{detail.bug.references.map((reference) => <article key={`${reference.kind}-${reference.url}`}><strong>{reference.label ?? reference.kind}</strong><p>{reference.url}</p></article>)}</section> : null}
       <section className="mk-detail-evidence"><h3>证据</h3>{detail.annotations.map((annotation, index) => <article key={annotation.id}><strong>#{index + 1} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong><p>{annotation.note || detail.bug.title}</p>{annotation.target ? <small>{annotation.target.selector}</small> : null}</article>)}{detail.annotations.length === 0 ? <p className="mk-empty">还没有绑定标注证据。</p> : null}</section>
     </aside>
   );
 }
 
 function Settings({ aiStatus }: { aiStatus: { enabled: boolean; provider: string; reason?: string } }) {
-  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / D 圈画 / E 元素 / S 区块 / C 截图 / Cmd+S 保存</dd></dl></section>;
+  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / 1-4 优先级 / Cmd+S 保存</dd></dl></section>;
 }
 
 function AnnotationShape({ annotation, selected, index }: { annotation: Annotation; selected: boolean; index: number }) {
@@ -945,6 +984,7 @@ function AnnotationShape({ annotation, selected, index }: { annotation: Annotati
   const labelX = Math.max(8, rect.x + 8);
   const labelY = Math.max(18, rect.y + 20);
   if (annotation.kind === 'pin') return <g><circle className={selected ? 'mk-ann-pin is-selected' : 'mk-ann-pin'} cx={rect.x} cy={rect.y} r="8" /><text className="mk-ann-label" x={rect.x + 11} y={rect.y - 10}>{index}</text></g>;
+  if (annotation.kind === 'ellipse') return <g><ellipse className={selected ? 'mk-ann-ellipse is-selected' : 'mk-ann-ellipse'} cx={rect.x + Math.max(rect.width, 8) / 2} cy={rect.y + Math.max(rect.height, 8) / 2} rx={Math.max(rect.width, 8) / 2} ry={Math.max(rect.height, 8) / 2} /><text className="mk-ann-label" x={labelX} y={labelY}>{index}</text></g>;
   if (annotation.kind === 'freehand' && annotation.geometry.paths?.[0]) return <g><polyline className="mk-ann-freehand" points={annotation.geometry.paths[0].map((p) => `${p.x},${p.y}`).join(' ')} /><text className="mk-ann-label" x={labelX} y={labelY}>{index}</text></g>;
   return <g><rect className={selected ? 'mk-ann-rect is-selected' : 'mk-ann-rect'} x={rect.x} y={rect.y} width={Math.max(rect.width, 8)} height={Math.max(rect.height, 8)} /><text className="mk-ann-label" x={labelX} y={labelY}>{index}</text></g>;
 }
@@ -961,6 +1001,27 @@ async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
   const body = text ? JSON.parse(text) : undefined;
   if (!response.ok) throw new Error(body?.error?.message || `${response.status} ${response.statusText}`);
   return body as T;
+}
+
+function completeDraft(draft: DraftBug, target?: DomTarget): DraftBug {
+  const comment = draft.comment.trim();
+  const type = bugTypeOptions.find((item) => item.value === draft.bugType) ?? bugTypeOptions[0]!;
+  const targetLabel = target?.label || target?.text || target?.tagName || '当前标注区域';
+  const title = draft.title.trim() || (comment ? comment.replace(/\s+/g, ' ').slice(0, 44) : `${type.label}：${targetLabel}`.slice(0, 44));
+  const actual = draft.actual.trim() || comment;
+  const expected = draft.expected.trim() || type.expected;
+  return { ...draft, title, actual, expected };
+}
+
+function referencesFromDraft(draft: DraftBug): BugReference[] {
+  const references: BugReference[] = [];
+  if (isHttpUrl(draft.requirementUrl)) references.push({ kind: 'requirement', url: draft.requirementUrl.trim(), label: '原始需求' });
+  if (isHttpUrl(draft.designUrl)) references.push({ kind: 'design', url: draft.designUrl.trim(), label: /figma/i.test(draft.designUrl) ? 'Figma' : '设计/对比图' });
+  return references;
+}
+
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value.trim());
 }
 
 function normalizeRect(start: Point, end: Point): Rect {
@@ -1005,7 +1066,11 @@ function distance(a: Point, b: Point): number {
 }
 
 function shortcutForTool(tool: Tool): string {
-  return ({ browse: 'B', pointer: 'V', pin: 'P', rect: 'R', freehand: 'D', element: 'E', section: 'S' } as Record<Tool, string>)[tool];
+  return ({ browse: 'B', pointer: 'V', pin: 'P', rect: 'R', ellipse: 'O', freehand: 'D', element: 'E', section: 'S' } as Record<Tool, string>)[tool];
+}
+
+function bugTypeLabel(value: string): string {
+  return bugTypeOptions.find((item) => item.value === value)?.label ?? value;
 }
 
 function deviceForViewport(viewport: Viewport): DeviceKey {

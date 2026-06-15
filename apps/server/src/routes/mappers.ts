@@ -60,6 +60,7 @@ export function mapBug(row: Row) {
     finalUrl: String(row.final_url),
     primaryCaptureId: row.primary_capture_id ? String(row.primary_capture_id) : undefined,
     tags: parseJson(row.tags_json, []),
+    references: parseJson<Array<{ kind: string; url: string; label?: string }>>(row.references_json, []),
     exportPath: row.export_path ? String(row.export_path) : undefined,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at)

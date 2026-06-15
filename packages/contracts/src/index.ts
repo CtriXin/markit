@@ -80,7 +80,7 @@ export const domTargetSchema = z.object({
 });
 export type DomTarget = z.infer<typeof domTargetSchema>;
 
-export const annotationKindSchema = z.enum(['pin', 'rect', 'freehand', 'element']);
+export const annotationKindSchema = z.enum(['pin', 'rect', 'ellipse', 'freehand', 'element', 'section']);
 export const annotationGeometrySchema = z.object({
   pageRect: rectSchema,
   captureRect: rectSchema,
@@ -105,6 +105,13 @@ export type MarkitAnnotation = z.infer<typeof markitAnnotationSchema>;
 
 export const severitySchema = z.enum(['P0', 'P1', 'P2', 'P3']);
 export const bugStatusSchema = z.enum(['draft', 'open', 'resolved', 'wontfix']);
+export const bugReferenceKindSchema = z.enum(['requirement', 'design', 'compare', 'other']);
+export const bugReferenceSchema = z.object({
+  kind: bugReferenceKindSchema,
+  url: z.string().url(),
+  label: z.string().optional()
+});
+export type BugReference = z.infer<typeof bugReferenceSchema>;
 export const markitBugSchema = z.object({
   id: z.string().min(1),
   sessionId: z.string().min(1),
@@ -117,6 +124,7 @@ export const markitBugSchema = z.object({
   finalUrl: z.string().url(),
   primaryCaptureId: z.string().optional(),
   tags: z.array(z.string()),
+  references: z.array(bugReferenceSchema),
   exportPath: z.string().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()

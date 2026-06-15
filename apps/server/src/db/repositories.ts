@@ -157,11 +157,12 @@ export function createRepositories(db: Database) {
         finalUrl: string;
         primaryCaptureId?: string;
         tags?: string[];
+        references?: unknown[];
       }) {
         const ts = now();
         db.run(
-          `INSERT INTO bugs (id, session_id, title, actual, expected, severity, status, source_url, final_url, primary_capture_id, tags_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO bugs (id, session_id, title, actual, expected, severity, status, source_url, final_url, primary_capture_id, tags_json, references_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             input.id,
             input.sessionId,
@@ -174,6 +175,7 @@ export function createRepositories(db: Database) {
             input.finalUrl,
             input.primaryCaptureId ?? null,
             json(input.tags ?? []),
+            json(input.references ?? []),
             ts,
             ts
           ]

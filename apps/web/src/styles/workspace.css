@@ -409,8 +409,8 @@
 .mk-overlay { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; }
 .mk-target-rect { fill: rgba(22, 119, 255, 0.06); stroke: rgba(22, 119, 255, 0.72); stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
 .mk-target-active { fill: rgba(22, 119, 255, 0.16); stroke: #1677ff; stroke-width: 2; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 4px rgba(22,119,255,.2)); }
-.mk-ann-rect { fill: rgba(22, 119, 255, 0.12); stroke: #1677ff; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
-.mk-ann-rect.is-selected { fill: rgba(22, 119, 255, 0.18); stroke: #0a66e8; }
+.mk-ann-rect, .mk-ann-ellipse { fill: rgba(22, 119, 255, 0.12); stroke: #1677ff; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.mk-ann-rect.is-selected, .mk-ann-ellipse.is-selected { fill: rgba(22, 119, 255, 0.18); stroke: #0a66e8; }
 .mk-ann-preview { fill: rgba(22, 119, 255, .10); stroke: #1677ff; stroke-width: 2; stroke-dasharray: 7 5; vector-effect: non-scaling-stroke; }
 .mk-rect-start { fill: #1677ff; stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .mk-ann-pin { fill: #16c784; stroke: #0c2d1d; stroke-width: 2; vector-effect: non-scaling-stroke; }
@@ -441,6 +441,32 @@
 .mk-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .mk-button-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .mk-button-pair button:first-child { background: #24231f; }
+.mk-quick-group { display: flex; flex-wrap: wrap; gap: 6px; }
+.mk-quick-group button {
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0 10px;
+  color: #cfc8be;
+  background: #24231f;
+}
+.mk-quick-group button.is-active {
+  color: #fff;
+  border-color: var(--mk-blue);
+  background: #115fd1;
+}
+.mk-reference-fields {
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 10px;
+  padding: 9px;
+  background: #191815;
+}
+.mk-reference-fields summary {
+  cursor: pointer;
+  color: #d8d1c8;
+  font-size: 12px;
+  font-weight: 900;
+}
+.mk-reference-fields label { margin-top: 8px; }
 .mk-ann-list { display: grid; gap: 8px; }
 .mk-ann-list h3 { margin: 0; font-size: 13px; }
 .mk-ann-list article { display: grid; gap: 7px; border: 1px solid var(--mk-border); border-radius: 10px; padding: 9px; background: #211f1b; }
@@ -465,6 +491,17 @@
 .mk-card-top, .mk-detail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .mk-card-top strong { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; border-radius: 7px; padding: 5px 8px; color: #fff; background: var(--mk-danger); }
 .mk-card-top span { color: #8f8880; font-size: 12px; font-weight: 900; }
+.mk-card-tags { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mk-card-tags em {
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #d8ecff;
+  background: rgba(22,119,255,.16);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 900;
+}
+.mk-card-tags small, .mk-reference-count { color: #8f8880; font-size: 12px; }
 .mk-bug-card h2, .mk-bug-detail h2 { margin: 0; color: #f2eee6; font-size: 18px; letter-spacing: -0.03em; }
 .mk-bug-card p, .mk-bug-card span { margin: 0; color: #aaa39a; }
 .mk-bug-card small { overflow-wrap: anywhere; }
