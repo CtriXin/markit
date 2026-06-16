@@ -11,7 +11,7 @@ export function aiRouter(context: ServerContext): Router {
 
   router.get('/api/ai/status', (_req, res) => {
     const status = resolveProvider();
-    const { apiKey: _apiKey, ...publicStatus } = status;
+    const { apiKey: _apiKey, baseUrl: _baseUrl, ...publicStatus } = status;
     res.json(publicStatus);
   });
 

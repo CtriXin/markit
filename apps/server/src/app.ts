@@ -17,7 +17,7 @@ export type HealthResponse = {
 export function createApp(context?: ServerContext) {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '90mb' }));
+  app.use(express.json({ limit: process.env.MARKIT_JSON_LIMIT || '90mb' }));
 
   app.get('/api/health', (_req, res) => {
     const body: HealthResponse = {

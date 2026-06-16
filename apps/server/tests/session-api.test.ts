@@ -148,6 +148,7 @@ describe('session and capture API', () => {
       const body = await response.json();
       expect(body).toMatchObject({ enabled: true, provider: 'local-mms-mmf', model: 'mmf-vision-test', supportsImages: true });
       expect(body.apiKey).toBeUndefined();
+      expect(body.baseUrl).toBeUndefined();
     } finally {
       restoreEnv('MARKIT_AI_PROVIDER', previous.provider);
       restoreEnv('MARKIT_MMF_BASE_URL', previous.baseUrl);

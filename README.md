@@ -65,6 +65,8 @@ MARKIT_MMF_MODEL_ID=...
 MARKIT_MODEL_MULTIMODAL=true
 ```
 
+`local-mms-mmf` 默认认为模型支持图片；如果临时只想走文本总结，设置 `MARKIT_MODEL_MULTIMODAL=false`。截图证据通过 JSON body 上传，默认 limit 为 `90mb`，可用 `MARKIT_JSON_LIMIT=120mb` 调整。
+
 ## Evidence
 
 最新本地验收会输出：
