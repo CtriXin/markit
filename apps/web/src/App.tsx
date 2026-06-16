@@ -1,4 +1,4 @@
-import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type Dispatch, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject, type SetStateAction, type WheelEvent as ReactWheelEvent } from 'react';
+import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type Dispatch, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject, type SetStateAction, type SyntheticEvent as ReactSyntheticEvent, type WheelEvent as ReactWheelEvent } from 'react';
 
 type HealthState = { kind: 'loading' } | { kind: 'ok'; version: string } | { kind: 'error'; message: string };
 type View = 'home' | 'session' | 'bugs' | 'settings';
@@ -199,6 +199,11 @@ export function App() {
     setDragStart(undefined);
     setRectPreview(undefined);
     setFreehand([]);
+  }
+
+  function closeQuickComment() {
+    setQuickComment(undefined);
+    cancelDrawing();
   }
 
   async function createSession(event: FormEvent) {
@@ -451,7 +456,7 @@ export function App() {
       await saveBug(nextDraft, [quickComment.annotationId]);
     } else {
       setMessage('已保存标注评论。');
-      setQuickComment(undefined);
+      closeQuickComment();
     }
   }
 
@@ -508,6 +513,7 @@ export function App() {
     setDraft(emptyDraft);
     setDraftAssets([]);
     setQuickComment(undefined);
+    cancelDrawing();
     lastAnnotationIdRef.current = '';
     setSelectedAnnotationIds([]);
     await refreshBugs();
@@ -839,6 +845,7 @@ export function App() {
                     freehand={freehand}
                     quickComment={quickComment?.captureId === deviceSlots[device]?.capture?.id ? quickComment : undefined}
                     setQuickComment={setQuickComment}
+                    onCloseQuickComment={closeQuickComment}
                     onSaveQuickComment={saveQuickComment}
                     onActivate={activateDevice}
                     onPointerDown={onCanvasPointerDown}
@@ -888,6 +895,7 @@ function DeviceFrame(props: {
   freehand: Point[];
   quickComment: QuickComment | undefined;
   setQuickComment: Dispatch<SetStateAction<QuickComment | undefined>>;
+  onCloseQuickComment: () => void;
   onSaveQuickComment: (saveAsBug?: boolean) => void | Promise<void>;
   onActivate: (device: DeviceKey) => void;
   onPointerDown: (event: PointerEvent<HTMLElement>) => void;
@@ -941,7 +949,7 @@ function DeviceFrame(props: {
                 comment={props.quickComment}
                 imageSize={capture.imageSize}
                 onChange={(text) => props.setQuickComment((current) => current ? { ...current, text } : current)}
-                onClose={() => props.setQuickComment(undefined)}
+                onClose={props.onCloseQuickComment}
                 onSave={() => props.onSaveQuickComment(false)}
                 onSaveBug={() => props.onSaveQuickComment(true)}
               />
@@ -967,6 +975,7 @@ function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width:
     ...(rightAnchored ? { right: `${Math.min(92, Math.max(3, 100 - clampedLeft))}%` } : { left: `${clampedLeft}%` }),
     ...(bottomAnchored ? { bottom: `${Math.min(86, Math.max(3, 100 - clampedTop))}%` } : { top: `${clampedTop}%` })
   };
+  const stopCanvasPropagation = (event: ReactSyntheticEvent) => event.stopPropagation();
   return (
     <div
       className={['mk-quick-comment-popover', rightAnchored ? 'is-right-anchored' : '', bottomAnchored ? 'is-bottom-anchored' : ''].filter(Boolean).join(' ')}
@@ -974,6 +983,13 @@ function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width:
       style={style}
       role="dialog"
       aria-label="快速评论"
+      onPointerDown={stopCanvasPropagation}
+      onPointerMove={stopCanvasPropagation}
+      onPointerUp={stopCanvasPropagation}
+      onPointerCancel={stopCanvasPropagation}
+      onClick={stopCanvasPropagation}
+      onDoubleClick={stopCanvasPropagation}
+      onWheel={stopCanvasPropagation}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.preventDefault();

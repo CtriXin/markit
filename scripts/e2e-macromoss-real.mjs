@@ -166,6 +166,7 @@ async function verifyFreehand(page) {
 }
 
 async function verifyEllipse(page) {
+  await closeQuickCommentIfPresent(page);
   const beforeCount = await annotationCount(page);
   await page.getByTestId('bug-comment').fill('圈选验证：截图标注式椭圆圈选可快速框住区域');
   await setTool(page, 'ellipse');
@@ -203,12 +204,44 @@ async function verifySectionPick(page) {
 
 async function verifyQuickCommentPopover(page) {
   await page.waitForSelector('[data-testid="quick-comment-popover"]');
+  const beforeSaveCount = await annotationCount(page);
   await page.getByTestId('quick-comment-input').fill('Popup 快速评论验证：标注后不用去右侧表单也能输入说明');
   await screenshot(page, '06-macromoss-quick-comment-popup.png');
-  await page.getByRole('button', { name: '保存评论' }).click();
+  await clickAndAssertNoCanvasLeak(page, page.getByRole('button', { name: '保存评论' }), '保存评论');
   await page.waitForFunction(() => /已保存标注评论/.test(document.body.innerText));
+  await assertNoDraftAnnotationLeak(page, '保存评论后');
+  const afterSaveCount = await annotationCount(page);
+  if (afterSaveCount !== beforeSaveCount) throw new Error(`Quick comment save created extra annotation: before=${beforeSaveCount} after=${afterSaveCount}`);
   const lastNote = await page.locator('.mk-ann-list article').last().locator('input[aria-label^="note-"]').inputValue();
   if (!lastNote.includes('Popup 快速评论验证')) throw new Error(`Quick comment was not saved to annotation: ${lastNote}`);
+  await verifyQuickCommentClose(page);
+}
+
+async function verifyQuickCommentClose(page) {
+  const beforeCloseCount = await annotationCount(page);
+  await page.getByTestId('bug-comment').fill('Popup 关闭验证：关闭按钮不应该变成框选起点');
+  await setTool(page, 'rect');
+  const natural = await page.locator('[data-testid="canvas-layer"] img').evaluate((node) => ({ width: node.naturalWidth, height: node.naturalHeight }));
+  const targetRect = {
+    x: Math.min(96, natural.width * 0.1),
+    y: Math.min(230, natural.height * 0.25),
+    width: Math.min(520, natural.width * 0.52),
+    height: Math.min(220, natural.height * 0.28)
+  };
+  const start = await screenPoint(page, targetRect, 0.2, 0.24);
+  const end = await screenPoint(page, targetRect, 0.74, 0.7);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length > count, beforeCloseCount);
+  await page.waitForSelector('[data-testid="quick-comment-popover"]');
+  await clickAndAssertNoCanvasLeak(page, page.getByRole('button', { name: '关闭快速评论' }), '关闭快速评论');
+  await page.waitForSelector('[data-testid="quick-comment-popover"]', { state: 'hidden' });
+  await assertNoDraftAnnotationLeak(page, '关闭快速评论后');
+  const afterCloseCount = await annotationCount(page);
+  if (afterCloseCount !== beforeCloseCount + 1) throw new Error(`Quick comment close changed annotation count unexpectedly: before=${beforeCloseCount} after=${afterCloseCount}`);
+  await screenshot(page, '06b-macromoss-quick-comment-close.png');
 }
 
 async function verifyQuickSave(page) {
@@ -249,6 +282,7 @@ async function pasteScreenshotEvidence(page) {
 }
 
 async function verifyUndoLastAnnotation(page) {
+  await closeQuickCommentIfPresent(page);
   const beforeCount = await annotationCount(page);
   await page.getByTestId('bug-comment').fill('撤销验证：临时标注应该能用 Z 快速撤销');
   await setTool(page, 'pin');
@@ -259,6 +293,7 @@ async function verifyUndoLastAnnotation(page) {
   await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length > count, beforeCount);
   await page.getByTestId('undo-annotation').click();
   await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length === count, beforeCount);
+  await page.waitForFunction(() => /已撤销最近标注/.test(document.body.innerText));
   const message = await page.locator('.mk-message').last().innerText();
   if (!message.includes('已撤销最近标注')) throw new Error(`Undo message missing: ${message}`);
 }
@@ -386,6 +421,33 @@ async function waitForCaptureChange(page, previousId) {
 
 async function annotationCount(page) {
   return page.locator('.mk-ann-list article').count();
+}
+
+async function clickAndAssertNoCanvasLeak(page, locator, context) {
+  const box = await locator.boundingBox();
+  if (!box) throw new Error(`Cannot click ${context}: target has no bounding box`);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(80);
+  await assertNoDraftAnnotationLeak(page, `${context} pointerdown`);
+  await page.mouse.up();
+}
+
+async function assertNoDraftAnnotationLeak(page, context) {
+  const leaked = await page.evaluate(() => ({
+    start: document.querySelectorAll('.mk-rect-start').length,
+    preview: document.querySelectorAll('.mk-ann-preview').length
+  }));
+  if (leaked.start || leaked.preview) throw new Error(`${context} leaked canvas draft state: ${JSON.stringify(leaked)}`);
+}
+
+async function closeQuickCommentIfPresent(page) {
+  const popover = page.getByTestId('quick-comment-popover');
+  const count = await popover.count();
+  if (!count) return;
+  await page.getByRole('button', { name: '关闭快速评论' }).click();
+  await page.waitForSelector('[data-testid="quick-comment-popover"]', { state: 'hidden' });
+  await assertNoDraftAnnotationLeak(page, '关闭遗留快速评论后');
 }
 
 async function addressValue(page) {
