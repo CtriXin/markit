@@ -1,4 +1,4 @@
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Page } from 'playwright';
 
 export type RuntimePage = {
   context: BrowserContext;
@@ -29,6 +29,12 @@ export class BrowserRuntime {
 
   getPage(sessionId: string): Page | undefined {
     return this.pages.get(sessionId)?.page;
+  }
+
+  async createCdpSession(sessionId: string): Promise<CDPSession | undefined> {
+    const runtime = this.pages.get(sessionId);
+    if (!runtime) return undefined;
+    return runtime.context.newCDPSession(runtime.page);
   }
 
   async closeSession(sessionId: string): Promise<void> {

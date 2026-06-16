@@ -161,6 +161,45 @@ export function sessionsRouter(context: ServerContext): Router {
     res.json({ session: mapSession(context.repos.sessions.get(sessionId)!), capture });
   }));
 
+  router.get('/api/sessions/:id/screencast', asyncHandler(async (req, res) => {
+    const sessionId = String(req.params.id);
+    const session = context.repos.sessions.get(sessionId);
+    if (!session) throw new MarkitHttpError(404, 'session_not_found', 'Session not found');
+    await ensureSessionPage(context, sessionId, session);
+    const client = await context.runtime.createCdpSession(sessionId);
+    if (!client) throw new MarkitHttpError(409, 'session_inactive', 'Session runtime page is inactive');
+
+    let closed = false;
+    const cleanup = async () => {
+      if (closed) return;
+      closed = true;
+      await client.send('Page.stopScreencast').catch(() => undefined);
+      await client.detach().catch(() => undefined);
+    };
+
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no'
+    });
+    res.write(': connected\n\n');
+    req.on('close', () => { void cleanup(); });
+
+    client.on('Page.screencastFrame', (frame) => {
+      if (closed) return;
+      void client.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => undefined);
+      const payload = JSON.stringify({
+        dataUrl: `data:image/jpeg;base64,${frame.data}`,
+        timestamp: Date.now(),
+        metadata: frame.metadata
+      });
+      res.write(`event: frame\ndata: ${payload}\n\n`);
+    });
+
+    await client.send('Page.startScreencast', { format: 'jpeg', quality: 72, everyNthFrame: 1 });
+  }));
+
 
   return router;
 }

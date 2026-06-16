@@ -59,6 +59,8 @@ async function main() {
 
     await verifyAnnotationModeScroll(page);
     result.capabilities.annotationModeScroll = true;
+    result.capabilities.liveBrowseScreencast = true;
+    result.capabilities.annotationLockCapture = true;
     result.capabilities.navigateReturnsBrowseMode = true;
 
     const clickResult = await clickRealNavigation(page);
@@ -112,7 +114,6 @@ async function main() {
 async function clickRealNavigation(page) {
   const tried = new Set();
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const beforeCapture = await currentCaptureId(page);
     const beforeUrl = await addressValue(page);
     const targets = await currentTargets(page);
     const candidate = chooseLinkTarget(targets, tried);
@@ -121,8 +122,11 @@ async function clickRealNavigation(page) {
     await setTool(page, 'browse');
     const point = await screenPoint(page, candidate.captureRect, 0.5, 0.5);
     await page.mouse.click(point.x, point.y);
-    await waitForCaptureChange(page, beforeCapture);
-    await waitIdle(page);
+    await page.waitForFunction((oldUrl) => {
+      const input = document.querySelector('[data-testid="session-address"]');
+      return input instanceof HTMLInputElement && input.value !== oldUrl;
+    }, beforeUrl).catch(() => undefined);
+    await page.waitForTimeout(500);
     const afterUrl = await addressValue(page);
     const record = {
       selector: candidate.selector,
@@ -139,21 +143,27 @@ async function clickRealNavigation(page) {
 }
 
 async function verifyAnnotationModeScroll(page) {
-  await setTool(page, 'rect');
-  const beforeCapture = await currentCaptureId(page);
-  const beforeScroll = await currentScroll(page);
+  await assertBrowseMode(page, '滚动前');
+  await waitForLiveFrame(page);
+  const beforeCapture = await latestCaptureId(page);
+  const beforeScroll = await latestCaptureScroll(page);
   const beforeCaptureCount = (await fetchCapturesForActiveSession(page)).length;
   const box = await page.locator('[data-testid="canvas-layer"] img').boundingBox();
   if (!box) throw new Error('Canvas image has no box for annotation scroll test');
   await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
   for (let index = 0; index < 5; index += 1) await page.mouse.wheel(0, 180);
-  await waitForCaptureChange(page, beforeCapture);
   await page.waitForTimeout(650);
   await waitIdle(page);
+  const duringCaptureCount = (await fetchCapturesForActiveSession(page)).length;
+  if (duringCaptureCount !== beforeCaptureCount) throw new Error(`Browse wheel should not create captures before lock: before=${beforeCaptureCount} during=${duringCaptureCount}`);
+  await setTool(page, 'rect');
+  await waitForCaptureChange(page, beforeCapture);
   const afterScroll = await currentScroll(page);
-  if (afterScroll.y <= beforeScroll.y) throw new Error(`Annotation mode wheel did not scroll target page: before=${JSON.stringify(beforeScroll)} after=${JSON.stringify(afterScroll)}`);
+  if (afterScroll.y <= beforeScroll.y) throw new Error(`Browse wheel did not scroll target page before annotation lock: before=${JSON.stringify(beforeScroll)} after=${JSON.stringify(afterScroll)}`);
   const afterCaptureCount = (await fetchCapturesForActiveSession(page)).length;
   if (afterCaptureCount !== beforeCaptureCount + 1) throw new Error(`Wheel burst should create one capture: before=${beforeCaptureCount} after=${afterCaptureCount}`);
+  const lockText = await page.getByTestId('device-pc').locator('.mk-device-header em').innerText();
+  if (!lockText.includes('已锁定标注')) throw new Error(`Annotation lock indicator missing: ${lockText}`);
   await screenshot(page, '02-macromoss-annotation-mode-scroll.png');
   const resetCapture = await currentCaptureId(page);
   await page.getByTestId('session-address').fill(targetUrl);
@@ -164,11 +174,11 @@ async function verifyAnnotationModeScroll(page) {
 }
 
 async function verifyFreehand(page) {
+  await setTool(page, 'freehand');
   const target = chooseSectionTarget(await currentTargets(page));
   if (!target) throw new Error('No target available for freehand circle');
   const beforeCount = await annotationCount(page);
   await page.getByTestId('bug-comment').fill('圈画验证：真实网页区域可自由圈画');
-  await setTool(page, 'freehand');
   await drawLoop(page, target.captureRect);
   await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length > count, beforeCount);
 }
@@ -197,11 +207,11 @@ async function verifyEllipse(page) {
 }
 
 async function verifySectionPick(page) {
+  await setTool(page, 'section');
   const target = chooseSectionTarget(await currentTargets(page));
   if (!target) throw new Error('No section-like target available');
   const beforeCount = await annotationCount(page);
   await page.getByTestId('bug-comment').fill('区块验证：点击后选中完整 section/card 区域');
-  await setTool(page, 'section');
   const point = await screenPoint(page, target.captureRect, 0.5, 0.5);
   await page.mouse.click(point.x, point.y);
   await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length > count, beforeCount);
@@ -355,8 +365,14 @@ async function drawLoop(page, rect) {
 }
 
 async function setTool(page, tool) {
+  const wasBrowse = await page.getByTestId('tool-browse').evaluate((node) => node.classList.contains('is-active'));
+  const beforeCapture = await latestCaptureId(page).catch(() => undefined);
   await page.getByTestId(`tool-${tool}`).click();
   await page.waitForSelector(`[data-testid="tool-${tool}"].is-active`);
+  if (tool !== 'browse' && wasBrowse && beforeCapture) {
+    await waitForCaptureChange(page, beforeCapture);
+    await waitIdle(page);
+  }
 }
 
 async function assertBrowseMode(page, context) {
@@ -369,8 +385,15 @@ async function assertBrowseMode(page, context) {
   }
 }
 
+async function waitForLiveFrame(page) {
+  await page.waitForFunction(() => {
+    const src = document.querySelector('[data-testid="canvas-layer"] img')?.getAttribute('src') || '';
+    return src.startsWith('data:image/');
+  });
+}
+
 async function currentTargets(page) {
-  const captureId = await currentCaptureId(page);
+  const captureId = await latestCaptureId(page);
   const response = await fetch(`${apiUrl}/api/captures/${captureId}/dom-targets`);
   if (!response.ok) throw new Error(`dom-targets failed: ${response.status}`);
   return response.json();
@@ -400,6 +423,23 @@ async function currentScroll(page) {
   const capture = captures.find((item) => item.id === captureId);
   if (!capture) throw new Error(`Current capture not found for scroll read: ${JSON.stringify(captureList)}`);
   return capture.scroll || { x: 0, y: 0 };
+}
+
+async function latestCaptureId(page) {
+  const src = await page.locator('[data-testid="canvas-layer"] img').getAttribute('src');
+  const match = src?.match(/\/api\/captures\/([^/]+)\/image/);
+  if (match) return match[1];
+  const captures = await fetchCapturesForActiveSession(page);
+  const latest = captures.at(-1);
+  if (!latest) throw new Error('No capture found for active session');
+  return latest.id;
+}
+
+async function latestCaptureScroll(page) {
+  const captures = await fetchCapturesForActiveSession(page);
+  const latest = captures.at(-1);
+  if (!latest) throw new Error('No capture found while reading latest scroll');
+  return latest.scroll || { x: 0, y: 0 };
 }
 
 async function fetchCapturesForActiveSession(page) {

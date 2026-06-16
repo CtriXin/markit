@@ -24,6 +24,7 @@ type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; 
 
 type DraftBug = { title: string; actual: string; expected: string; severity: string; status: string; comment: string; bugType: string; requirementUrl: string; designUrl: string };
 type ActionOptions = { quiet?: boolean; checkStale?: boolean };
+type LiveFrame = { sessionId: string; dataUrl: string; timestamp: number };
 
 const viewportOptions: Array<Viewport & { key: string }> = [
   { key: 'desktop-1440', name: '桌面端 1440x900', width: 1440, height: 900, deviceScaleFactor: 1 },
@@ -92,6 +93,7 @@ export function App() {
   const [message, setMessage] = useState('');
   const [actionText, setActionText] = useState('');
   const [addressText, setAddressText] = useState('');
+  const [liveFrame, setLiveFrame] = useState<LiveFrame>();
   const [lastPoint, setLastPoint] = useState<Point>();
   const [dragStart, setDragStart] = useState<Point>();
   const [rectPreview, setRectPreview] = useState<Rect>();
@@ -127,8 +129,23 @@ export function App() {
   }, [capture?.id]);
 
   useEffect(() => {
-    if (capture?.finalUrl) setAddressText(capture.finalUrl);
-  }, [capture?.finalUrl]);
+    if (session?.currentUrl) setAddressText(session.currentUrl);
+    else if (capture?.finalUrl) setAddressText(capture.finalUrl);
+  }, [session?.currentUrl, capture?.finalUrl]);
+
+  useEffect(() => {
+    if (view !== 'session' || tool !== 'browse' || !session?.id) {
+      setLiveFrame(undefined);
+      return;
+    }
+    const source = new EventSource(`/api/sessions/${session.id}/screencast`);
+    source.addEventListener('frame', (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as { dataUrl: string; timestamp: number };
+      setLiveFrame({ sessionId: session.id, dataUrl: payload.dataUrl, timestamp: payload.timestamp });
+    });
+    source.onerror = () => setLiveFrame(undefined);
+    return () => source.close();
+  }, [view, tool, session?.id]);
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0 });
@@ -190,8 +207,10 @@ export function App() {
   }, [view, session?.id, capture?.id, draft, selectedAnnotationIds, annotations, tool]);
 
   function setTool(name: Tool) {
+    const shouldLockCapture = name !== 'browse' && tool === 'browse' && view === 'session';
     cancelDrawing();
     setToolState(name);
+    if (shouldLockCapture) void createCapture('viewport');
   }
 
   function cancelDrawing() {
@@ -648,7 +667,7 @@ export function App() {
     const point = capturePoint(event);
     setLastPoint(point);
     if (tool === 'pointer') return;
-    if (tool === 'browse') void runAction('click', { point });
+    if (tool === 'browse') void runAction('click', { point, recapture: false }, { quiet: true, checkStale: false });
     if (tool === 'pin') void addAnnotation('pin', { x: point.x, y: point.y, width: 1, height: 1 });
     if (tool === 'element') {
       const target = pickTarget(domTargets, point);
@@ -693,6 +712,7 @@ export function App() {
   }
 
   function onCanvasWheel(event: ReactWheelEvent<HTMLElement>) {
+    if (tool !== 'browse') return;
     event.preventDefault();
     if ((busy && !scrollInFlightRef.current) || dragStartRef.current || freehandRef.current.length) return;
     wheelDeltaRef.current = {
@@ -719,7 +739,7 @@ export function App() {
     }
     scrollInFlightRef.current = true;
     try {
-      await runAction('scroll', { delta }, { quiet: true, checkStale: false });
+      await runAction('scroll', { delta, recapture: false }, { quiet: true, checkStale: false });
     } finally {
       scrollInFlightRef.current = false;
       const pending = wheelDeltaRef.current;
@@ -736,7 +756,7 @@ export function App() {
     const key = normalizeKeyboardKey(event.key);
     if (!key) return;
     event.preventDefault();
-    void runAction('key', { key });
+    void runAction('key', { key, recapture: false }, { quiet: true, checkStale: false });
   }
 
   function onCanvasPointerUp(event: PointerEvent<HTMLElement>) {
@@ -820,7 +840,7 @@ export function App() {
                 <button onClick={() => runAction('back')}>后退</button>
                 <button onClick={() => runAction('forward')}>前进</button>
                 <button onClick={() => runAction('reload')}>刷新</button>
-                <a className="mk-open-link" href={capture.finalUrl} target="_blank" rel="noreferrer">新窗口</a>
+                <a className="mk-open-link" href={session.currentUrl || capture.finalUrl} target="_blank" rel="noreferrer">新窗口</a>
               </div>
             </div>
             <div className="mk-toolstrip">
@@ -836,7 +856,7 @@ export function App() {
                 {primaryTools.map((item) => <button data-testid={`tool-${item}`} key={item} className={tool === item ? 'is-active' : ''} onClick={() => setTool(item)}><span>{toolLabels[item]}</span><small>{shortcutForTool(item)}</small></button>)}
               </div>
               <div className="mk-toolbar-group mk-region-tool-group">
-                <button data-testid="tool-region" className={regionTools.includes(tool) ? 'mk-region-title is-active' : 'mk-region-title'} onClick={() => setTool('rect')}><span>区域标注</span><small>{toolLabels[tool] && regionTools.includes(tool) ? toolLabels[tool] : '框选'}</small></button>
+                <button data-testid="tool-region" className={regionTools.includes(tool) ? 'mk-region-title is-active' : 'mk-region-title'} onClick={() => setTool('rect')}><span>{tool === 'browse' ? '开始标注' : '标注中'}</span><small>{toolLabels[tool] && regionTools.includes(tool) ? toolLabels[tool] : '区域标注'}</small></button>
                 {regionTools.map((item) => <button data-testid={`tool-${item}`} key={item} className={tool === item ? 'is-active' : ''} onClick={() => setTool(item)}><span>{toolLabels[item]}</span><small>{shortcutForTool(item)}</small></button>)}
               </div>
               <div className="mk-toolbar-group mk-semantic-tool-group">
@@ -879,6 +899,7 @@ export function App() {
                     dragStart={dragStart}
                     rectPreview={rectPreview}
                     freehand={freehand}
+                    liveFrame={liveFrame?.sessionId === deviceSlots[device]?.session.id ? liveFrame : undefined}
                     quickComment={quickComment?.captureId === deviceSlots[device]?.capture?.id ? quickComment : undefined}
                     setQuickComment={setQuickComment}
                     onCloseQuickComment={closeQuickComment}
@@ -929,6 +950,7 @@ function DeviceFrame(props: {
   dragStart: Point | undefined;
   rectPreview: Rect | undefined;
   freehand: Point[];
+  liveFrame: LiveFrame | undefined;
   quickComment: QuickComment | undefined;
   setQuickComment: Dispatch<SetStateAction<QuickComment | undefined>>;
   onCloseQuickComment: () => void;
@@ -942,14 +964,15 @@ function DeviceFrame(props: {
 }) {
   const capture = props.slot?.capture;
   const label = deviceLabels[props.device];
+  const imageSrc = props.active && props.tool === 'browse' && props.liveFrame ? props.liveFrame.dataUrl : capture ? `/api/captures/${capture.id}/image` : '';
   const layerStyle = props.zoomMode === 'manual' && capture
     ? { width: `${Math.max(120, Math.round(capture.imageSize.width * (props.zoomPercent / 100)))}px` }
     : undefined;
   return (
-    <article data-testid={`device-${props.device}`} className={['mk-device-frame', `mk-device-${props.device}`, props.active ? 'is-active' : '', props.active && props.tool === 'browse' ? 'is-browse-tool' : ''].filter(Boolean).join(' ')}>
+    <article data-testid={`device-${props.device}`} className={['mk-device-frame', `mk-device-${props.device}`, props.active ? 'is-active' : '', props.active && props.tool === 'browse' ? 'is-browse-tool' : '', props.active && props.tool !== 'browse' ? 'is-annotation-tool' : ''].filter(Boolean).join(' ')}>
       <button className="mk-device-header" onClick={() => props.onActivate(props.device)} type="button">
         <span><strong>{label.title}</strong><small>{capture ? `${capture.viewport.width}x${capture.viewport.height}` : label.hint}</small></span>
-        <em>{props.active ? (props.tool === 'browse' ? '正在浏览' : '正在标注') : '点击切换'}</em>
+        <em>{props.active ? (props.tool === 'browse' ? '正在浏览' : '已锁定标注') : '点击切换'}</em>
       </button>
       <div className="mk-device-shell">
         {capture ? (
@@ -965,7 +988,7 @@ function DeviceFrame(props: {
             onWheel={props.active ? props.onWheel : undefined}
             onKeyDown={props.active ? props.onKeyDown : undefined}
           >
-            <img ref={props.active ? props.imageRef : undefined} draggable={false} src={`/api/captures/${capture.id}/image`} alt={`${label.title}截图`} />
+            <img ref={props.active ? props.imageRef : undefined} draggable={false} src={imageSrc} alt={`${label.title}截图`} />
             {props.active ? (
               <svg className="mk-overlay" viewBox={`0 0 ${capture.imageSize.width} ${capture.imageSize.height}`}>
                 {props.domTargets.map((target) => props.tool === 'element' ? <rect key={target.id} className="mk-target-rect" x={target.captureRect.x} y={target.captureRect.y} width={target.captureRect.width} height={target.captureRect.height} /> : null)}
