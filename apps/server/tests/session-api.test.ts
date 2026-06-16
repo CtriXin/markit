@@ -117,6 +117,13 @@ describe('session and capture API', () => {
     const assetResponse = await fetch(`${apiBaseUrl}/api/bug-assets/${bugBody.assets[0].id}/image`);
     expect(assetResponse.status).toBe(200);
     expect(assetResponse.headers.get('content-type')).toContain('image/png');
+
+    const deleteResponse = await fetch(`${apiBaseUrl}/api/bugs/${bugBody.bug.id}`, { method: 'DELETE' });
+    expect(deleteResponse.status).toBe(200);
+    const bugsAfterDelete = await fetch(`${apiBaseUrl}/api/bugs`).then((item) => item.json());
+    expect(bugsAfterDelete.bugs.some((bug: { id: string }) => bug.id === bugBody.bug.id)).toBe(false);
+    const deletedAssetResponse = await fetch(`${apiBaseUrl}/api/bug-assets/${bugBody.assets[0].id}/image`);
+    expect(deletedAssetResponse.status).toBe(404);
   }, 30_000);
 
   it('revives an inactive runtime page before browse actions', async () => {

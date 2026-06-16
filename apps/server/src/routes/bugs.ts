@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { PNG } from 'pngjs';
 import { Router } from 'express';
@@ -70,6 +70,27 @@ export function bugsRouter(context: ServerContext): Router {
     );
     await context.database.save();
     res.json(await bugDetail(context, id));
+  }));
+
+  router.delete('/api/bugs/:id', asyncHandler(async (req, res) => {
+    const id = String(req.params.id);
+    const bug = first(context.database.db, 'SELECT * FROM bugs WHERE id = ?', [id]);
+    if (!bug) throw new MarkitHttpError(404, 'bug_not_found', 'Bug not found');
+    const jobs = all(context.database.db, 'SELECT id FROM ai_jobs WHERE bug_id = ?', [id]).map((row) => String(row.id));
+    if (jobs.length) {
+      const placeholders = jobs.map(() => '?').join(', ');
+      context.database.db.run(`DELETE FROM ai_runs WHERE job_id IN (${placeholders})`, jobs);
+    }
+    context.database.db.run('DELETE FROM ai_jobs WHERE bug_id = ?', [id]);
+    context.database.db.run('DELETE FROM bug_annotations WHERE bug_id = ?', [id]);
+    context.database.db.run('DELETE FROM bug_assets WHERE bug_id = ?', [id]);
+    context.database.db.run('DELETE FROM bugs WHERE id = ?', [id]);
+    await Promise.all([
+      rm(join(context.dataDir, 'assets', 'bugs', id), { recursive: true, force: true }),
+      rm(join(context.dataDir, 'exports', id), { recursive: true, force: true })
+    ]);
+    await context.database.save();
+    res.json({ ok: true });
   }));
 
   router.post('/api/bugs/:id/annotations', asyncHandler(async (req, res) => {

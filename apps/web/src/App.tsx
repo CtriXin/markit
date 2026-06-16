@@ -215,9 +215,21 @@ export function App() {
     setFreehand([]);
   }
 
-  function closeQuickComment() {
+  function dismissQuickComment() {
     setQuickComment(undefined);
     cancelDrawing();
+  }
+
+  async function cancelQuickCommentAnnotation() {
+    const current = quickComment;
+    dismissQuickComment();
+    if (!current) return;
+    try {
+      await deleteAnnotation(current.annotationId);
+      setMessage('已取消这次标注。');
+    } catch (error) {
+      setMessage(error instanceof Error ? `取消标注失败：${error.message}` : '取消标注失败');
+    }
   }
 
   async function createSession(event: FormEvent) {
@@ -447,16 +459,16 @@ export function App() {
 
   async function addAnnotation(kind: Tool, captureRect: Rect, target?: DomTarget, paths?: Point[][]) {
     if (!capture) return;
+    setMessage('');
     const pending = (async () => {
       const body = await api<{ annotation: Annotation }>(`/api/captures/${capture.id}/annotations`, {
         method: 'POST',
-        body: JSON.stringify({ kind, geometry: { captureRect, paths }, target, note: draft.comment, colorRole: kind === 'element' ? 'selected' : 'bug' })
+        body: JSON.stringify({ kind, geometry: { captureRect, paths }, target, note: '', colorRole: kind === 'element' ? 'selected' : 'bug' })
       });
       lastAnnotationIdRef.current = body.annotation.id;
       setAnnotations((current) => [...current, body.annotation]);
       setSelectedAnnotationIds((current) => [...new Set([...current, body.annotation.id])]);
-      setQuickComment({ annotationId: body.annotation.id, captureId: body.annotation.captureId, rect: body.annotation.geometry.captureRect, text: body.annotation.note || draft.comment });
-      if (!draft.title && body.annotation.note) setDraft((current) => ({ ...current, title: body.annotation.note.slice(0, 44), actual: body.annotation.note }));
+      setQuickComment({ annotationId: body.annotation.id, captureId: body.annotation.captureId, rect: body.annotation.geometry.captureRect, text: '' });
     })();
     pendingAnnotationRef.current = pending;
     try {
@@ -477,13 +489,13 @@ export function App() {
     const text = quickComment.text.trim();
     if (!text) return;
     await updateAnnotation(quickComment.annotationId, { note: text });
-    const nextDraft = { ...draft, comment: text, title: draft.title || text.slice(0, 44), actual: draft.actual || text };
-    setDraft(nextDraft);
     if (saveAsBug) {
+      const nextDraft = { ...draft, comment: text, title: draft.title || text.slice(0, 44), actual: draft.actual || text };
+      setDraft(nextDraft);
       await saveBug(nextDraft, [quickComment.annotationId]);
     } else {
-      setMessage('已保存标注评论。');
-      closeQuickComment();
+      setMessage('已保存标注评论；它仍留在“本次标注”，可继续勾选后合并为一个 Bug。');
+      dismissQuickComment();
     }
   }
 
@@ -551,6 +563,19 @@ export function App() {
     setMessage(`证据已导出到 ${body.exportPath}`);
     await refreshBugs();
     if (selectedBugId === bugId) await loadBugDetail(bugId);
+  }
+
+  async function deleteBug(bugId: string) {
+    const confirmed = window.confirm('删除这个 Bug？已保存的 Bug 记录、附件和导出文件会移除；原始截图记录不受影响。');
+    if (!confirmed) return;
+    await api<{ ok: true }>(`/api/bugs/${bugId}`, { method: 'DELETE' });
+    setBugs((current) => current.filter((bug) => bug.id !== bugId));
+    if (selectedBugId === bugId) {
+      setSelectedBugId('');
+      setBugDetail(undefined);
+    }
+    setMessage('已删除 Bug。');
+    await refreshBugs();
   }
 
   async function addDraftAssetFiles(files: FileList | File[], source: DraftAsset['kind']) {
@@ -920,7 +945,7 @@ export function App() {
                     sessionId={deviceSlots[device]?.session.id}
                     quickComment={quickComment?.captureId === deviceSlots[device]?.capture?.id ? quickComment : undefined}
                     setQuickComment={setQuickComment}
-                    onCloseQuickComment={closeQuickComment}
+                    onCloseQuickComment={cancelQuickCommentAnnotation}
                     onSaveQuickComment={saveQuickComment}
                     onActivate={activateDevice}
                     onPointerDown={onCanvasPointerDown}
@@ -947,7 +972,7 @@ export function App() {
           </aside>
         </section>
       ) : null}
-      {view === 'bugs' ? <BugsView bugs={bugs} selectedBugId={selectedBugId} bugDetail={bugDetail} loadBugDetail={loadBugDetail} patchBug={patchBug} exportBug={exportBug} /> : null}
+      {view === 'bugs' ? <BugsView bugs={bugs} selectedBugId={selectedBugId} bugDetail={bugDetail} loadBugDetail={loadBugDetail} patchBug={patchBug} exportBug={exportBug} deleteBug={deleteBug} /> : null}
       {view === 'settings' ? <Settings aiStatus={aiStatus} /> : null}
     </main>
   );
@@ -971,7 +996,7 @@ function DeviceFrame(props: {
   freehand: Point[];
   quickComment: QuickComment | undefined;
   setQuickComment: Dispatch<SetStateAction<QuickComment | undefined>>;
-  onCloseQuickComment: () => void;
+  onCloseQuickComment: () => void | Promise<void>;
   onSaveQuickComment: (saveAsBug?: boolean) => void | Promise<void>;
   onActivate: (device: DeviceKey) => void;
   onPointerDown: (event: PointerEvent<HTMLElement>) => void;
@@ -1075,7 +1100,7 @@ function LiveScreencastImage(props: { sessionId: string; fallbackSrc: string; im
   return <img ref={props.imageRef} draggable={false} src={props.fallbackSrc} alt={props.alt} />;
 }
 
-function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width: number; height: number }; onChange: (text: string) => void; onClose: () => void; onSave: () => void | Promise<void>; onSaveBug: () => void | Promise<void> }) {
+function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width: number; height: number }; onChange: (text: string) => void; onClose: () => void | Promise<void>; onSave: () => void | Promise<void>; onSaveBug: () => void | Promise<void> }) {
   const rect = props.comment.rect;
   const left = ((rect.x + Math.min(rect.width, 28)) / props.imageSize.width) * 100;
   const top = ((rect.y + Math.min(rect.height, 28)) / props.imageSize.height) * 100;
@@ -1113,12 +1138,13 @@ function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width:
         }
       }}
     >
-      <div className="mk-quick-comment-head"><strong>快速评论</strong><button aria-label="关闭快速评论" onClick={props.onClose}>×</button></div>
+      <div className="mk-quick-comment-head"><strong>快速评论</strong><button aria-label="取消这次标注" title="取消这次标注" onClick={props.onClose}>×</button></div>
       <textarea data-testid="quick-comment-input" autoFocus value={props.comment.text} onChange={(event) => props.onChange(event.currentTarget.value)} placeholder="直接描述这个标注，比如：这里的按钮颜色和 Figma 不一致" />
       <div className="mk-quick-comment-actions">
         <button onClick={() => props.onSave()} disabled={!props.comment.text.trim()}>保存评论</button>
         <button className="primary" data-testid="quick-comment-save-bug" onClick={() => props.onSaveBug()} disabled={!props.comment.text.trim()}>保存为 Bug</button>
       </div>
+      <small className="mk-quick-comment-tip">保存评论只保留标注；保存为 Bug 会把这条标注提交成一个 Bug。点 × 会取消当前框选。</small>
     </div>
   );
 }
@@ -1189,12 +1215,18 @@ function BugPanel(props: {
   const toggleAnnotation = (annotationId: string, checked: boolean) => {
     props.setSelectedAnnotationIds((current) => checked ? [...new Set([...current, annotationId])] : current.filter((id) => id !== annotationId));
   };
+  const selectedCount = props.selectedAnnotationIds.length;
+  const selectionHint = props.annotations.length
+    ? selectedCount
+      ? `已选 ${selectedCount} 条；点击“保存为一个 Bug”会把它们绑定成同一个 Bug 的证据。`
+      : '未勾选时会默认绑定最后一条标注；可勾选多条合并到同一个 Bug。'
+    : '先点击“开始标注”，框选后这里会出现截图区域。';
   return (
     <div className="mk-bug-panel">
       <section className="mk-panel-section mk-ann-list">
         <div className="mk-ann-list-head">
           <h3>本次标注</h3>
-          <small>{props.annotations.length ? '勾选后快速保存会绑定为 Bug 证据；不勾选时默认绑定最后一条。' : '先点击“开始标注”，框选后这里会出现截图区域。'}</small>
+          <small>{selectionHint}</small>
         </div>
         {props.annotations.map((annotation, index) => (
           <article key={annotation.id} className={props.selectedAnnotationIds.includes(annotation.id) ? 'is-selected' : ''}>
@@ -1208,7 +1240,7 @@ function BugPanel(props: {
                 />
                 <strong>#{index + 1} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong>
               </label>
-              <input aria-label={`note-${annotation.id}`} value={annotation.note} placeholder="标注说明" onChange={(event) => props.updateAnnotation(annotation.id, { note: event.currentTarget.value })} />
+              <AnnotationNoteInput annotation={annotation} updateAnnotation={props.updateAnnotation} />
               {annotation.target ? <small>{annotation.target.selector}</small> : null}
               <button className="mk-danger-button" onClick={() => props.deleteAnnotation(annotation.id)}>删除标注</button>
             </div>
@@ -1217,7 +1249,8 @@ function BugPanel(props: {
         {props.annotations.length === 0 ? <p className="mk-empty">还没有标注。</p> : null}
       </section>
       <section className="mk-panel-section mk-draft-card">
-        <h2>评论此元素</h2>
+        <h2>Bug 草稿</h2>
+        <small className="mk-draft-hint">在这里写统一描述；上面勾选的标注会作为同一个 Bug 的截图证据。</small>
         <div className="mk-quick-group" data-testid="bug-type-chips">
           {bugTypeOptions.map((item) => <button type="button" key={item.value} className={props.draft.bugType === item.value ? 'is-active' : ''} onClick={() => update('bugType', item.value)}>{item.label}</button>)}
         </div>
@@ -1249,7 +1282,7 @@ function BugPanel(props: {
             </div>
           ) : null}
         </section>
-        <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>整理描述（{props.aiStatus.provider}{props.aiStatus.supportsImages ? '+图片' : ''}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>快速保存</button></div>
+        <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>整理描述（{props.aiStatus.provider}{props.aiStatus.supportsImages ? '+图片' : ''}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>保存为一个 Bug</button></div>
         <small>快捷：1/2/3/4 设 P0/P1/P2/P3，A 快速保存，Z 撤销标注，O 圈选，D 自由画；画布滚轮会滚动真实页面。</small>
         {!props.aiStatus.enabled ? <small>{props.aiStatus.reason}</small> : null}
       </section>
@@ -1263,6 +1296,46 @@ function BugPanel(props: {
         <dl><dt>视口</dt><dd>{props.capture.viewport.name}</dd><dt>模式</dt><dd>{captureModeLabel(props.capture.mode)}</dd><dt>来源</dt><dd>{props.session.sourceUrl}</dd><dt>最终地址</dt><dd>{props.capture.finalUrl}</dd></dl>
       </section>
     </div>
+  );
+}
+
+function AnnotationNoteInput(props: { annotation: Annotation; updateAnnotation: (id: string, patch: Partial<Annotation>) => Promise<void> }) {
+  const [value, setValue] = useState(props.annotation.note);
+  const composingRef = useRef(false);
+  const syncedValueRef = useRef(props.annotation.note);
+
+  useEffect(() => {
+    if (props.annotation.note === syncedValueRef.current) return;
+    syncedValueRef.current = props.annotation.note;
+    if (!composingRef.current) setValue(props.annotation.note);
+  }, [props.annotation.id, props.annotation.note]);
+
+  const commit = async (nextValue = value) => {
+    if (nextValue === syncedValueRef.current) return;
+    syncedValueRef.current = nextValue;
+    await props.updateAnnotation(props.annotation.id, { note: nextValue });
+  };
+
+  return (
+    <input
+      aria-label={`note-${props.annotation.id}`}
+      data-testid="annotation-note-input"
+      value={value}
+      placeholder="标注说明"
+      onChange={(event) => setValue(event.currentTarget.value)}
+      onCompositionStart={() => { composingRef.current = true; }}
+      onCompositionEnd={(event) => {
+        composingRef.current = false;
+        setValue(event.currentTarget.value);
+      }}
+      onBlur={() => { void commit(); }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        void commit();
+        event.currentTarget.blur();
+      }}
+    />
   );
 }
 
@@ -1289,7 +1362,7 @@ function AnnotationCropPreview({ annotation, capture }: { annotation: Annotation
   );
 }
 
-function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void }) {
+function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; deleteBug: (id: string) => Promise<void> }) {
   useEffect(() => {
     if (!props.selectedBugId && props.bugs[0]) void props.loadBugDetail(props.bugs[0].id);
   }, [props.bugs.length, props.selectedBugId]);
@@ -1307,25 +1380,34 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
               <span data-testid="bug-annotation-count">{bug.annotationCount ?? 0} 条标注</span>
               {bug.assetCount ? <span className="mk-reference-count">{bug.assetCount} 张截图</span> : null}
               {bug.references?.length ? <span className="mk-reference-count">{bug.references.length} 个引用</span> : null}
-              <button data-testid="export-evidence" onClick={(event) => { event.stopPropagation(); props.exportBug(bug.id); }}>导出证据</button>
+              <div className="mk-card-actions">
+                <button data-testid="export-evidence" onClick={(event) => { event.stopPropagation(); props.exportBug(bug.id); }}>导出证据</button>
+                <button className="mk-danger-button" data-testid="delete-bug" onClick={(event) => { event.stopPropagation(); void props.deleteBug(bug.id); }}>删除</button>
+              </div>
               {bug.exportPath ? <small>{bug.exportPath}</small> : null}
             </article>
           ))}
           {props.bugs.length === 0 ? <p className="mk-empty">还没有保存 Bug。</p> : null}
         </div>
-        <BugDetailPanel detail={props.bugDetail} patchBug={props.patchBug} exportBug={props.exportBug} />
+        <BugDetailPanel detail={props.bugDetail} patchBug={props.patchBug} exportBug={props.exportBug} deleteBug={props.deleteBug} />
       </div>
     </section>
   );
 }
 
-function BugDetailPanel({ detail, patchBug, exportBug }: { detail: BugDetail | undefined; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void }) {
+function BugDetailPanel({ detail, patchBug, exportBug, deleteBug }: { detail: BugDetail | undefined; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; deleteBug: (id: string) => Promise<void> }) {
   const [edit, setEdit] = useState<Bug | undefined>(detail?.bug);
   useEffect(() => setEdit(detail?.bug), [detail?.bug.id]);
   if (!detail || !edit) return <aside className="mk-bug-detail"><p className="mk-empty">选择一个 Bug 查看证据。</p></aside>;
   return (
     <aside className="mk-bug-detail" data-testid="bug-detail">
-      <div className="mk-detail-head"><div><span>{detail.bug.id}</span><h2>{detail.bug.title}</h2></div><button data-testid="detail-export" onClick={() => exportBug(detail.bug.id)}>导出证据</button></div>
+      <div className="mk-detail-head">
+        <div><span>{detail.bug.id}</span><h2>{detail.bug.title}</h2></div>
+        <div className="mk-detail-actions">
+          <button data-testid="detail-export" onClick={() => exportBug(detail.bug.id)}>导出证据</button>
+          <button className="mk-danger-button" data-testid="detail-delete" onClick={() => void deleteBug(detail.bug.id)}>删除 Bug</button>
+        </div>
+      </div>
       <div className="mk-two-col">
         <label>优先级<select value={edit.severity} onChange={(event) => setEdit((current) => current ? { ...current, severity: event.currentTarget.value } : current)}><option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></label>
         <label>状态<select value={edit.status} onChange={(event) => setEdit((current) => current ? { ...current, status: event.currentTarget.value } : current)}>{statusOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>

@@ -17,7 +17,8 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('Cmd+V 粘贴截图');
     expect(source).toContain('快速评论');
     expect(source).toContain('原始需求链接');
-    expect(source).toContain('评论此元素');
+    expect(source).toContain('Bug 草稿');
+    expect(source).toContain('保存为一个 Bug');
     expect(source).toContain('data-testid="url-input"');
     expect(source).not.toMatch(/ChatComposer|project\/run/i);
   });

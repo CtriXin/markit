@@ -21,6 +21,7 @@ const result = {
   screenshots: [],
   clickAttempts: [],
   capabilities: {},
+  pageErrors: [],
   errors: []
 };
 
@@ -33,6 +34,7 @@ async function main() {
 
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 980 }, deviceScaleFactor: 1 });
+  page.on('pageerror', (error) => result.pageErrors.push(error.stack || error.message));
   page.setDefaultTimeout(35_000);
   try {
     await page.goto(appUrl, { waitUntil: 'networkidle' });
@@ -100,6 +102,7 @@ async function main() {
     await waitIdle(page);
     result.capabilities.optionalDualPreview = true;
     await screenshot(page, '10-macromoss-dual-optional.png');
+    if (result.pageErrors.length) throw new Error(`Page errors detected: ${result.pageErrors.join('\n')}`);
 
     result.finishedAt = new Date().toISOString();
     await writeResult();
@@ -222,6 +225,9 @@ async function verifySectionPick(page) {
 
 async function verifyQuickCommentPopover(page) {
   await page.waitForSelector('[data-testid="quick-comment-popover"]');
+  const initialQuickText = await page.getByTestId('quick-comment-input').inputValue();
+  if (initialQuickText.trim()) throw new Error(`New quick comment should start empty, got: ${initialQuickText}`);
+  result.capabilities.quickCommentStartsEmpty = true;
   const beforeSaveCount = await annotationCount(page);
   await page.getByTestId('quick-comment-input').fill('Popup 快速评论验证：标注后不用去右侧表单也能输入说明');
   await screenshot(page, '06-macromoss-quick-comment-popup.png');
@@ -232,11 +238,22 @@ async function verifyQuickCommentPopover(page) {
   if (afterSaveCount !== beforeSaveCount) throw new Error(`Quick comment save created extra annotation: before=${beforeSaveCount} after=${afterSaveCount}`);
   const lastNote = await page.locator('.mk-ann-list article').last().locator('input[aria-label^="note-"]').inputValue();
   if (!lastNote.includes('Popup 快速评论验证')) throw new Error(`Quick comment was not saved to annotation: ${lastNote}`);
+  const chineseNote = '中文输入验证：标注说明可以正常输入';
+  const noteInput = page.locator('[data-testid="annotation-note-input"]').last();
+  await noteInput.fill(chineseNote);
+  await noteInput.blur();
+  await page.waitForFunction((expected) => {
+    const items = Array.from(document.querySelectorAll('[data-testid="draft-annotation-comment"]'));
+    return items.some((item) => item.textContent?.includes(expected));
+  }, chineseNote);
+  const chineseValue = await noteInput.inputValue();
+  if (chineseValue !== chineseNote) throw new Error(`Chinese annotation note did not stick: ${chineseValue}`);
+  result.capabilities.annotationChineseNoteInput = true;
   const annotationCard = page.locator('.mk-ann-list article').last();
   await annotationCard.locator('input[type="checkbox"]').click();
   await annotationCard.locator('input[type="checkbox"]').click();
   const draftThreadText = await page.locator('[data-testid="draft-annotation-comment"]').last().innerText();
-  if (!draftThreadText.includes('Popup 快速评论验证')) throw new Error(`Draft annotation was not visible in left thread: ${draftThreadText}`);
+  if (!draftThreadText.includes(chineseNote)) throw new Error(`Draft annotation was not visible in left thread: ${draftThreadText}`);
   await setTool(page, 'browse');
   await page.waitForFunction(() => document.querySelectorAll('.mk-overlay .mk-ann-rect, .mk-overlay .mk-ann-ellipse, .mk-overlay .mk-ann-pin, .mk-overlay .mk-ann-freehand').length === 0);
   result.capabilities.annotationThreadVisible = true;
@@ -263,11 +280,15 @@ async function verifyQuickCommentClose(page) {
   await page.mouse.up();
   await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length > count, beforeCloseCount);
   await page.waitForSelector('[data-testid="quick-comment-popover"]');
-  await clickAndAssertNoCanvasLeak(page, page.getByRole('button', { name: '关闭快速评论' }), '关闭快速评论');
+  const closeInputValue = await page.getByTestId('quick-comment-input').inputValue();
+  if (closeInputValue.trim()) throw new Error(`Cancel popup should not inherit draft text, got: ${closeInputValue}`);
+  await clickAndAssertNoCanvasLeak(page, page.getByRole('button', { name: '取消这次标注' }), '取消这次标注');
   await page.waitForSelector('[data-testid="quick-comment-popover"]', { state: 'hidden' });
   await assertNoDraftAnnotationLeak(page, '关闭快速评论后');
+  await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length === count, beforeCloseCount);
   const afterCloseCount = await annotationCount(page);
-  if (afterCloseCount !== beforeCloseCount + 1) throw new Error(`Quick comment close changed annotation count unexpectedly: before=${beforeCloseCount} after=${afterCloseCount}`);
+  if (afterCloseCount !== beforeCloseCount) throw new Error(`Quick comment cancel should remove the new annotation: before=${beforeCloseCount} after=${afterCloseCount}`);
+  result.capabilities.annotationCancelOnPopupClose = true;
   await screenshot(page, '06b-macromoss-quick-comment-close.png');
 }
 
@@ -293,6 +314,20 @@ async function verifyQuickSave(page) {
   if (!detailText.includes('快速保存验证')) throw new Error(`Quick save did not prefer latest comment: ${detailText}`);
   if (!detailText.includes('Figma') || !detailText.includes('原始需求')) throw new Error(`Quick save references missing: ${detailText}`);
   if (!detailText.includes('截图 / 对比证据') || !detailText.includes('figma-compare.png') || !detailText.includes('pasted-proof.png')) throw new Error(`Screenshot evidence missing: ${detailText}`);
+  await screenshot(page, '09a-macromoss-bug-detail-before-delete.png');
+  await verifyBugDelete(page);
+  result.capabilities.bugDelete = true;
+  await screenshot(page, '09b-macromoss-bug-delete.png');
+}
+
+async function verifyBugDelete(page) {
+  const beforeCount = await page.getByTestId('bug-card').count();
+  if (beforeCount < 1) throw new Error('No bug card available for delete verification');
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByTestId('detail-delete').click();
+  await page.waitForFunction((count) => document.querySelectorAll('[data-testid="bug-card"]').length === count - 1, beforeCount);
+  const afterCount = await page.getByTestId('bug-card').count();
+  if (afterCount !== beforeCount - 1) throw new Error(`Bug delete did not remove card: before=${beforeCount} after=${afterCount}`);
 }
 
 async function pasteScreenshotEvidence(page) {
@@ -514,8 +549,10 @@ async function closeQuickCommentIfPresent(page) {
   const popover = page.getByTestId('quick-comment-popover');
   const count = await popover.count();
   if (!count) return;
-  await page.getByRole('button', { name: '关闭快速评论' }).click();
+  const beforeCount = await annotationCount(page);
+  await page.getByRole('button', { name: '取消这次标注' }).click();
   await page.waitForSelector('[data-testid="quick-comment-popover"]', { state: 'hidden' });
+  await page.waitForFunction((previous) => document.querySelectorAll('.mk-ann-list article').length < previous, beforeCount).catch(() => undefined);
   await assertNoDraftAnnotationLeak(page, '关闭遗留快速评论后');
 }
 
