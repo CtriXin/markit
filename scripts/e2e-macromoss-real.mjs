@@ -232,13 +232,22 @@ async function verifyQuickCommentPopover(page) {
   if (afterSaveCount !== beforeSaveCount) throw new Error(`Quick comment save created extra annotation: before=${beforeSaveCount} after=${afterSaveCount}`);
   const lastNote = await page.locator('.mk-ann-list article').last().locator('input[aria-label^="note-"]').inputValue();
   if (!lastNote.includes('Popup 快速评论验证')) throw new Error(`Quick comment was not saved to annotation: ${lastNote}`);
+  const annotationCard = page.locator('.mk-ann-list article').last();
+  await annotationCard.locator('input[type="checkbox"]').click();
+  await annotationCard.locator('input[type="checkbox"]').click();
+  const draftThreadText = await page.locator('[data-testid="draft-annotation-comment"]').last().innerText();
+  if (!draftThreadText.includes('Popup 快速评论验证')) throw new Error(`Draft annotation was not visible in left thread: ${draftThreadText}`);
+  await setTool(page, 'browse');
+  await page.waitForFunction(() => document.querySelectorAll('.mk-overlay .mk-ann-rect, .mk-overlay .mk-ann-ellipse, .mk-overlay .mk-ann-pin, .mk-overlay .mk-ann-freehand').length === 0);
+  result.capabilities.annotationThreadVisible = true;
+  result.capabilities.browseHidesLockedAnnotations = true;
   await verifyQuickCommentClose(page);
 }
 
 async function verifyQuickCommentClose(page) {
-  const beforeCloseCount = await annotationCount(page);
   await page.getByTestId('bug-comment').fill('Popup 关闭验证：关闭按钮不应该变成框选起点');
   await setTool(page, 'rect');
+  const beforeCloseCount = await annotationCount(page);
   const natural = await page.locator('[data-testid="canvas-layer"] img').evaluate((node) => ({ width: node.naturalWidth, height: node.naturalHeight }));
   const targetRect = {
     x: Math.min(96, natural.width * 0.1),

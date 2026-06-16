@@ -784,6 +784,7 @@ export function App() {
   const activeTarget = useMemo(() => lastPoint ? (tool === 'section' ? pickSectionTarget(domTargets, lastPoint) ?? pickTarget(domTargets, lastPoint) : pickTarget(domTargets, lastPoint)) : undefined, [domTargets, lastPoint, tool]);
   const activeSessionIds = useMemo(() => new Set(Object.values(deviceSlots).map((slot) => slot?.session.id).filter(Boolean) as string[]), [deviceSlots]);
   const sessionBugs = useMemo(() => bugs.filter((bug) => activeSessionIds.has(bug.sessionId) || bug.sessionId === session?.id), [activeSessionIds, bugs, session?.id]);
+  const commentCount = sessionBugs.length + annotations.length;
   const workbenchClass = ['mk-workbench', leftCollapsed ? 'is-left-collapsed' : '', rightCollapsed ? 'is-right-collapsed' : ''].filter(Boolean).join(' ');
   const boardStyle = { '--mk-preview-zoom': String(zoomPercent / 100) } as CSSProperties;
   const visibleDevices = (previewMode === 'dual' ? deviceOrder : [activeDevice]).filter((device) => deviceSlots[device]);
@@ -804,24 +805,39 @@ export function App() {
         <section className={workbenchClass} data-testid="workbench">
           <aside className="mk-left-rail" data-collapsed={leftCollapsed}>
             {leftCollapsed ? (
-              <button data-testid="toggle-left-rail" className="mk-collapsed-tab" onClick={() => setLeftCollapsed(false)}><strong>评论</strong><span>{sessionBugs.length}</span></button>
+              <button data-testid="toggle-left-rail" className="mk-collapsed-tab" onClick={() => setLeftCollapsed(false)}><strong>评论</strong><span>{commentCount}</span></button>
             ) : (
               <>
                 <div className="mk-rail-block mk-comment-thread">
-                  <h2><span>评论</span><button data-testid="toggle-left-rail" aria-label="收起评论" onClick={() => setLeftCollapsed(true)}>‹</button></h2>
+                  <h2><span>评论 / 标注</span><button data-testid="toggle-left-rail" aria-label="收起评论" onClick={() => setLeftCollapsed(true)}>‹</button></h2>
+                  {annotations.map((annotation, index) => (
+                    <button
+                      data-testid="draft-annotation-comment"
+                      className={selectedAnnotationIds.includes(annotation.id) ? 'mk-comment-item mk-comment-annotation is-active' : 'mk-comment-item mk-comment-annotation'}
+                      key={annotation.id}
+                      onClick={() => { setSelectedAnnotationIds([annotation.id]); setRightCollapsed(false); }}
+                    >
+                      <strong>#{index + 1} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong>
+                      <span className="mk-comment-time">未保存</span>
+                      <span className="mk-comment-status">标注</span>
+                      <p>{annotation.note || '还没有填写标注说明'}</p>
+                      <small>{annotation.target?.selector || '截图区域标注'}</small>
+                    </button>
+                  ))}
                   {sessionBugs.map((bug) => (
                     <button className="mk-comment-item" key={bug.id} onClick={() => { void loadBugDetail(bug.id); setView('bugs'); }}>
                       <strong>{bugSelectorLabel(bug)}</strong>
                       <span className="mk-comment-time">刚刚</span>
-                      <span className="mk-comment-check" aria-hidden="true" />
+                      <span className="mk-comment-status">Bug</span>
                       <p>{bug.title || '未命名 Bug'}</p>
                       <small>{bug.annotationCount ?? 0} 条标注</small>
                     </button>
                   ))}
-                  {sessionBugs.length === 0 ? <p className="mk-empty">还没有保存 Bug。</p> : null}
+                  {commentCount === 0 ? <p className="mk-empty">还没有标注或保存 Bug。</p> : null}
                 </div>
                 <div className="mk-rail-block mk-capture-thread">
-                  <h2><span>快照 · {deviceLabels[activeDevice].short}</span></h2>
+                  <h2><span>截图记录 · {deviceLabels[activeDevice].short}</span></h2>
+                  <p className="mk-rail-hint">开始标注、截取视口和整页截图会在这里保留证据版本。</p>
                   {captures.map((item) => <button className={item.id === capture.id ? 'is-active' : ''} key={item.id} onClick={() => selectCapture(item)}><span className="mk-capture-time">{new Date(item.createdAt).toLocaleTimeString()}</span><strong>{captureModeLabel(item.mode)}</strong><span>{item.viewport.name} / {item.imageSize.width}x{item.imageSize.height}</span></button>)}
                 </div>
               </>
@@ -967,6 +983,7 @@ function DeviceFrame(props: {
   const capture = props.slot?.capture;
   const label = deviceLabels[props.device];
   const imageSrc = capture ? `/api/captures/${capture.id}/image` : '';
+  const showAnnotationOverlay = props.active && props.tool !== 'browse';
   const layerStyle = props.zoomMode === 'manual' && capture
     ? { width: `${Math.max(120, Math.round(capture.imageSize.width * (props.zoomPercent / 100)))}px` }
     : undefined;
@@ -995,7 +1012,7 @@ function DeviceFrame(props: {
             ) : (
               <img ref={props.active ? props.imageRef : undefined} draggable={false} src={imageSrc} alt={`${label.title}截图`} />
             )}
-            {props.active ? (
+            {showAnnotationOverlay ? (
               <svg className="mk-overlay" viewBox={`0 0 ${capture.imageSize.width} ${capture.imageSize.height}`}>
                 {props.domTargets.map((target) => props.tool === 'element' ? <rect key={target.id} className="mk-target-rect" x={target.captureRect.x} y={target.captureRect.y} width={target.captureRect.width} height={target.captureRect.height} /> : null)}
                 {props.activeTarget && ['pointer', 'element', 'section'].includes(props.tool) ? <rect className="mk-target-active" x={props.activeTarget.captureRect.x} y={props.activeTarget.captureRect.y} width={props.activeTarget.captureRect.width} height={props.activeTarget.captureRect.height} /> : null}
@@ -1009,7 +1026,7 @@ function DeviceFrame(props: {
                 {props.freehand.length > 1 ? <polyline className="mk-ann-freehand" points={props.freehand.map((p) => `${p.x},${p.y}`).join(' ')} /> : null}
               </svg>
             ) : null}
-            {props.active && props.quickComment ? (
+            {showAnnotationOverlay && props.quickComment ? (
               <QuickCommentPopover
                 comment={props.quickComment}
                 imageSize={capture.imageSize}
@@ -1169,8 +1186,36 @@ function BugPanel(props: {
     event.preventDefault();
     void props.addDraftAssetFiles(files, 'uploaded-screenshot');
   };
+  const toggleAnnotation = (annotationId: string, checked: boolean) => {
+    props.setSelectedAnnotationIds((current) => checked ? [...new Set([...current, annotationId])] : current.filter((id) => id !== annotationId));
+  };
   return (
     <div className="mk-bug-panel">
+      <section className="mk-panel-section mk-ann-list">
+        <div className="mk-ann-list-head">
+          <h3>本次标注</h3>
+          <small>{props.annotations.length ? '勾选后快速保存会绑定为 Bug 证据；不勾选时默认绑定最后一条。' : '先点击“开始标注”，框选后这里会出现截图区域。'}</small>
+        </div>
+        {props.annotations.map((annotation, index) => (
+          <article key={annotation.id} className={props.selectedAnnotationIds.includes(annotation.id) ? 'is-selected' : ''}>
+            <AnnotationCropPreview annotation={annotation} capture={props.capture} />
+            <div className="mk-ann-body">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={props.selectedAnnotationIds.includes(annotation.id)}
+                  onChange={(event) => toggleAnnotation(annotation.id, event.currentTarget.checked)}
+                />
+                <strong>#{index + 1} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong>
+              </label>
+              <input aria-label={`note-${annotation.id}`} value={annotation.note} placeholder="标注说明" onChange={(event) => props.updateAnnotation(annotation.id, { note: event.currentTarget.value })} />
+              {annotation.target ? <small>{annotation.target.selector}</small> : null}
+              <button className="mk-danger-button" onClick={() => props.deleteAnnotation(annotation.id)}>删除标注</button>
+            </div>
+          </article>
+        ))}
+        {props.annotations.length === 0 ? <p className="mk-empty">还没有标注。</p> : null}
+      </section>
       <section className="mk-panel-section mk-draft-card">
         <h2>评论此元素</h2>
         <div className="mk-quick-group" data-testid="bug-type-chips">
@@ -1213,22 +1258,33 @@ function BugPanel(props: {
         {props.activeTarget ? <dl data-testid="active-target"><dt>选择器</dt><dd>{props.activeTarget.selector}</dd><dt>标签</dt><dd>{props.activeTarget.label || props.activeTarget.text || props.activeTarget.tagName}</dd>{props.activeTarget.value ? <><dt>值</dt><dd>{props.activeTarget.value}</dd></> : null}<dt>评分</dt><dd>{props.activeTarget.selectorScore}</dd></dl> : <p className="mk-empty">在画布上移动或点击，自动识别 DOM 目标。</p>}
         {props.lastPoint ? <small>坐标 {props.lastPoint.x.toFixed(0)}, {props.lastPoint.y.toFixed(0)}</small> : null}
       </section>
-      <section className="mk-panel-section mk-ann-list">
-        <h3>标注</h3>
-        {props.annotations.map((annotation, index) => (
-          <article key={annotation.id} className={props.selectedAnnotationIds.includes(annotation.id) ? 'is-selected' : ''}>
-            <label><input type="checkbox" checked={props.selectedAnnotationIds.includes(annotation.id)} onChange={(event) => props.setSelectedAnnotationIds((current) => event.currentTarget.checked ? [...new Set([...current, annotation.id])] : current.filter((id) => id !== annotation.id))} /> <strong>#{index + 1} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong></label>
-            <input aria-label={`note-${annotation.id}`} value={annotation.note} placeholder="标注说明" onChange={(event) => props.updateAnnotation(annotation.id, { note: event.currentTarget.value })} />
-            {annotation.target ? <small>{annotation.target.selector}</small> : null}
-            <button className="mk-danger-button" onClick={() => props.deleteAnnotation(annotation.id)}>删除标注</button>
-          </article>
-        ))}
-        {props.annotations.length === 0 ? <p className="mk-empty">还没有标注。</p> : null}
-      </section>
       <section className="mk-panel-section mk-meta-list">
         <h2>截图信息</h2>
         <dl><dt>视口</dt><dd>{props.capture.viewport.name}</dd><dt>模式</dt><dd>{captureModeLabel(props.capture.mode)}</dd><dt>来源</dt><dd>{props.session.sourceUrl}</dd><dt>最终地址</dt><dd>{props.capture.finalUrl}</dd></dl>
       </section>
+    </div>
+  );
+}
+
+function AnnotationCropPreview({ annotation, capture }: { annotation: Annotation; capture: Capture }) {
+  const source = annotation.geometry.captureRect;
+  const imageWidth = Math.max(1, capture.imageSize.width);
+  const imageHeight = Math.max(1, capture.imageSize.height);
+  const centerX = source.x + Math.max(source.width, 1) / 2;
+  const centerY = source.y + Math.max(source.height, 1) / 2;
+  const cropWidth = Math.min(imageWidth, Math.max(Math.abs(source.width), 128));
+  const cropHeight = Math.min(imageHeight, Math.max(Math.abs(source.height), 82));
+  const cropX = Math.min(Math.max(0, centerX - cropWidth / 2), Math.max(0, imageWidth - cropWidth));
+  const cropY = Math.min(Math.max(0, centerY - cropHeight / 2), Math.max(0, imageHeight - cropHeight));
+  const scale = Math.max(82 / cropWidth, 58 / cropHeight);
+  const style: CSSProperties = {
+    width: `${Math.round(imageWidth * scale)}px`,
+    height: `${Math.round(imageHeight * scale)}px`,
+    transform: `translate3d(${-cropX * scale}px, ${-cropY * scale}px, 0)`
+  };
+  return (
+    <div className="mk-ann-thumb" aria-label="标注截图区域">
+      <img src={`/api/captures/${annotation.captureId}/image`} alt="标注截图区域" style={style} />
     </div>
   );
 }
