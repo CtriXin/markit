@@ -112,6 +112,18 @@ export const bugReferenceSchema = z.object({
   label: z.string().optional()
 });
 export type BugReference = z.infer<typeof bugReferenceSchema>;
+export const bugAssetKindSchema = z.enum(['pasted-screenshot', 'uploaded-screenshot', 'compare-image', 'other']);
+export const markitBugAssetSchema = z.object({
+  id: z.string().min(1),
+  bugId: z.string().min(1),
+  kind: bugAssetKindSchema,
+  fileName: z.string().min(1),
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  sizeBytes: z.number().int().positive(),
+  label: z.string().optional(),
+  createdAt: z.string().datetime()
+});
+export type MarkitBugAsset = z.infer<typeof markitBugAssetSchema>;
 export const markitBugSchema = z.object({
   id: z.string().min(1),
   sessionId: z.string().min(1),
@@ -197,7 +209,13 @@ export const normalizeBugRequestSchema = z.object({
   strictness: z.enum(['strict', 'draft']),
   existingDraft: bugRequirementDraftSchema.partial().optional(),
   clarificationAnswers: z.array(z.object({ questionId: z.string(), answer: z.string() })).optional(),
-  includeCropImages: z.boolean().optional()
+  includeCropImages: z.boolean().optional(),
+  assets: z.array(z.object({
+    label: z.string().optional(),
+    fileName: z.string().min(1),
+    mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+    dataUrl: z.string().regex(/^data:image\/(png|jpeg|webp);base64,/i)
+  })).max(8).optional()
 });
 export type NormalizeBugRequest = z.infer<typeof normalizeBugRequestSchema>;
 

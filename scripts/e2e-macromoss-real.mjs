@@ -67,17 +67,23 @@ async function main() {
     result.capabilities.ellipseCircle = true;
     await screenshot(page, '04-macromoss-circle-ellipse.png');
 
+    await verifyQuickCommentPopover(page);
+    result.capabilities.quickCommentPopup = true;
+
     await verifySectionPick(page);
     result.capabilities.sectionPick = true;
-    await screenshot(page, '05-macromoss-section-pick.png');
+    await screenshot(page, '06-macromoss-section-pick.png');
 
     await verifyUndoLastAnnotation(page);
     result.capabilities.undoLastAnnotation = true;
-    await screenshot(page, '06-macromoss-undo.png');
+    await screenshot(page, '07-macromoss-undo.png');
 
     await verifyQuickSave(page);
     result.capabilities.quickSaveWithReferences = true;
-    await screenshot(page, '07-macromoss-quick-save.png');
+    result.capabilities.pasteScreenshotEvidence = true;
+    result.capabilities.uploadScreenshotEvidence = true;
+    result.capabilities.pasteUploadScreenshotEvidence = true;
+    await screenshot(page, '08-macromoss-quick-save.png');
     await page.getByRole('button', { name: '预览' }).click();
     await page.waitForSelector('[data-testid="device-pc"] img');
 
@@ -85,7 +91,7 @@ async function main() {
     await page.waitForSelector('[data-testid="device-mobile"] img');
     await waitIdle(page);
     result.capabilities.optionalDualPreview = true;
-    await screenshot(page, '08-macromoss-dual-optional.png');
+    await screenshot(page, '09-macromoss-dual-optional.png');
 
     result.finishedAt = new Date().toISOString();
     await writeResult();
@@ -172,12 +178,30 @@ async function verifySectionPick(page) {
   result.sectionTarget = { selector: target.selector, label: target.label, tagName: target.tagName };
 }
 
+async function verifyQuickCommentPopover(page) {
+  await page.waitForSelector('[data-testid="quick-comment-popover"]');
+  await page.getByTestId('quick-comment-input').fill('Popup 快速评论验证：标注后不用去右侧表单也能输入说明');
+  await screenshot(page, '05-macromoss-quick-comment-popup.png');
+  await page.getByRole('button', { name: '保存评论' }).click();
+  await page.waitForFunction(() => /已保存标注评论/.test(document.body.innerText));
+  const lastNote = await page.locator('.mk-ann-list article').last().locator('input[aria-label^="note-"]').inputValue();
+  if (!lastNote.includes('Popup 快速评论验证')) throw new Error(`Quick comment was not saved to annotation: ${lastNote}`);
+}
+
 async function verifyQuickSave(page) {
   await page.getByTestId('bug-comment').fill('快速保存验证：只写一句话也能生成标题、实际表现和默认期望');
   await page.getByTestId('bug-type-chips').getByRole('button', { name: '样式不符' }).click();
   await page.locator('.mk-reference-fields summary').click();
   await page.getByTestId('requirement-url').fill('https://example.com/requirement');
   await page.getByTestId('design-url').fill('https://figma.com/file/markit-smoke');
+  await pasteScreenshotEvidence(page);
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="asset-preview-list"] img').length >= 1);
+  await page.getByTestId('asset-upload-input').setInputFiles({
+    name: 'figma-compare.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64')
+  });
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="asset-preview-list"] img').length >= 2);
   await page.getByTestId('save-bug').click();
   await page.waitForFunction(() => /已保存 Bug/.test(document.body.innerText));
   await page.getByTestId('nav-bugs').click();
@@ -185,6 +209,20 @@ async function verifyQuickSave(page) {
   const detailText = await page.getByTestId('bug-detail').innerText();
   if (!detailText.includes('快速保存验证')) throw new Error(`Quick save did not prefer latest comment: ${detailText}`);
   if (!detailText.includes('Figma') || !detailText.includes('原始需求')) throw new Error(`Quick save references missing: ${detailText}`);
+  if (!detailText.includes('截图 / 对比证据') || !detailText.includes('figma-compare.png') || !detailText.includes('pasted-proof.png')) throw new Error(`Screenshot evidence missing: ${detailText}`);
+}
+
+async function pasteScreenshotEvidence(page) {
+  const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+  await page.evaluate((base64) => {
+    const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const file = new File([bytes], 'pasted-proof.png', { type: 'image/png' });
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    const event = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: transfer });
+    window.dispatchEvent(event);
+  }, pngBase64);
 }
 
 async function verifyUndoLastAnnotation(page) {
@@ -196,7 +234,7 @@ async function verifyUndoLastAnnotation(page) {
   const point = await screenPoint(page, target.captureRect, 0.52, 0.52);
   await page.mouse.click(point.x, point.y);
   await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length > count, beforeCount);
-  await page.keyboard.press('z');
+  await page.getByTestId('undo-annotation').click();
   await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length === count, beforeCount);
   const message = await page.locator('.mk-message').last().innerText();
   if (!message.includes('已撤销最近标注')) throw new Error(`Undo message missing: ${message}`);

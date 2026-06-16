@@ -1,4 +1,4 @@
-import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type KeyboardEvent as ReactKeyboardEvent, type RefObject, type SetStateAction, type WheelEvent as ReactWheelEvent } from 'react';
+import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type Dispatch, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject, type SetStateAction, type WheelEvent as ReactWheelEvent } from 'react';
 
 type HealthState = { kind: 'loading' } | { kind: 'ok'; version: string } | { kind: 'error'; message: string };
 type View = 'home' | 'session' | 'bugs' | 'settings';
@@ -15,8 +15,12 @@ type Point = { x: number; y: number };
 type DomTarget = { id: string; selector: string; selectorKind: string; selectorScore: number; label: string; tagName: string; text: string; value?: string; htmlHint: string; captureRect: Rect };
 type Annotation = { id: string; captureId: string; kind: string; geometry: { captureRect: Rect; paths?: Point[][] }; target?: DomTarget; note: string; colorRole: string; sortOrder?: number };
 type BugReference = { kind: 'requirement' | 'design' | 'compare' | 'other'; url: string; label?: string };
-type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; annotationCount?: number; exportPath?: string; createdAt?: string; updatedAt?: string };
-type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[] };
+type BugAsset = { id: string; bugId: string; kind: string; fileName: string; mimeType: string; sizeBytes: number; label?: string; createdAt: string };
+type DraftAsset = { id: string; kind: 'pasted-screenshot' | 'uploaded-screenshot'; fileName: string; mimeType: string; sizeBytes: number; dataUrl: string; label: string };
+type QuickComment = { annotationId: string; captureId: string; rect: Rect; text: string };
+type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; annotationCount?: number; assetCount?: number; exportPath?: string; createdAt?: string; updatedAt?: string };
+type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; assets: BugAsset[] };
+type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; reason?: string };
 
 type DraftBug = { title: string; actual: string; expected: string; severity: string; status: string; comment: string; bugType: string; requirementUrl: string; designUrl: string };
 
@@ -49,6 +53,7 @@ const bugTypeOptions = [
   { value: 'ad', label: '广告异常', expected: '广告位应按需求展示，不遮挡内容，不缺失关键广告位。' }
 ] as const;
 const deviceOrder: DeviceKey[] = ['pc', 'mobile'];
+const assetMimeTypes = ['image/png', 'image/jpeg', 'image/webp'];
 const deviceLabels: Record<DeviceKey, { title: string; short: string; hint: string }> = {
   pc: { title: 'PC 模拟', short: 'PC', hint: '桌面端真实截图' },
   mobile: { title: 'Mobile 模拟', short: 'Mobile', hint: '移动端真实截图' }
@@ -76,6 +81,8 @@ export function App() {
   const [selectedBugId, setSelectedBugId] = useState('');
   const [bugDetail, setBugDetail] = useState<BugDetail>();
   const [draft, setDraft] = useState<DraftBug>(emptyDraft);
+  const [draftAssets, setDraftAssets] = useState<DraftAsset[]>([]);
+  const [quickComment, setQuickComment] = useState<QuickComment>();
   const [tool, setToolState] = useState<Tool>('browse');
   const [busy, setBusy] = useState('');
   const [message, setMessage] = useState('');
@@ -88,7 +95,7 @@ export function App() {
   const rectPointerDownRef = useRef<Point | undefined>(undefined);
   const [freehand, setFreehand] = useState<Point[]>([]);
   const freehandRef = useRef<Point[]>([]);
-  const [aiStatus, setAiStatus] = useState<{ enabled: boolean; provider: string; reason?: string }>({ enabled: false, provider: 'off' });
+  const [aiStatus, setAiStatus] = useState<AiStatus>({ enabled: false, provider: 'off' });
   const [deviceSlots, setDeviceSlots] = useState<Partial<Record<DeviceKey, DeviceSlot>>>({});
   const [activeDevice, setActiveDevice] = useState<DeviceKey>('pc');
   const [previewMode, setPreviewMode] = useState<PreviewMode>('single');
@@ -118,6 +125,18 @@ export function App() {
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0 });
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== 'session') return;
+    const onPaste = (event: ClipboardEvent) => {
+      const files = Array.from(event.clipboardData?.files ?? []).filter((file) => assetMimeTypes.includes(file.type));
+      if (!files.length) return;
+      event.preventDefault();
+      void addDraftAssetFiles(files, 'pasted-screenshot');
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
   }, [view]);
 
   useEffect(() => {
@@ -189,6 +208,9 @@ export function App() {
       setCaptures(slot.captures);
       setPreviewMode('single');
       setZoomMode('fit');
+      setDraft(emptyDraft);
+      setDraftAssets([]);
+      setQuickComment(undefined);
       setView('session');
       await Promise.all([refreshSessions(), refreshBugs()]);
     } catch (error) {
@@ -211,6 +233,8 @@ export function App() {
       setCaptures(body.captures);
       setCapture(nextCapture);
       setZoomMode('fit');
+      setDraftAssets([]);
+      setQuickComment(undefined);
       setView('session');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '打开已保存会话失败');
@@ -390,6 +414,7 @@ export function App() {
       lastAnnotationIdRef.current = body.annotation.id;
       setAnnotations((current) => [...current, body.annotation]);
       setSelectedAnnotationIds((current) => [...new Set([...current, body.annotation.id])]);
+      setQuickComment({ annotationId: body.annotation.id, captureId: body.annotation.captureId, rect: body.annotation.geometry.captureRect, text: body.annotation.note || draft.comment });
       if (!draft.title && body.annotation.note) setDraft((current) => ({ ...current, title: body.annotation.note.slice(0, 44), actual: body.annotation.note }));
     })();
     pendingAnnotationRef.current = pending;
@@ -406,11 +431,27 @@ export function App() {
     if (selectedBugId) await loadBugDetail(selectedBugId);
   }
 
+  async function saveQuickComment(saveAsBug = false) {
+    if (!quickComment) return;
+    const text = quickComment.text.trim();
+    if (!text) return;
+    await updateAnnotation(quickComment.annotationId, { note: text });
+    const nextDraft = { ...draft, comment: text, title: draft.title || text.slice(0, 44), actual: draft.actual || text };
+    setDraft(nextDraft);
+    if (saveAsBug) {
+      await saveBug(nextDraft, [quickComment.annotationId]);
+    } else {
+      setMessage('已保存标注评论。');
+      setQuickComment(undefined);
+    }
+  }
+
   async function deleteAnnotation(id: string) {
     await api<{ ok: true }>(`/api/annotations/${id}`, { method: 'DELETE' });
     setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
     setSelectedAnnotationIds((current) => current.filter((annotationId) => annotationId !== id));
     if (lastAnnotationIdRef.current === id) lastAnnotationIdRef.current = '';
+    setQuickComment((current) => current?.annotationId === id ? undefined : current);
     if (selectedBugId) await loadBugDetail(selectedBugId);
     await refreshBugs();
   }
@@ -425,10 +466,10 @@ export function App() {
     setMessage('已撤销最近标注。');
   }
 
-  async function saveBug() {
+  async function saveBug(inputDraft: DraftBug = draft, annotationIdsOverride?: string[]) {
     if (!session || !capture) return;
     if (pendingAnnotationRef.current) await pendingAnnotationRef.current;
-    const completedDraft = completeDraft(draft, activeTarget);
+    const completedDraft = completeDraft(inputDraft, activeTarget);
     if (!completedDraft.title || !completedDraft.actual || !completedDraft.expected || !completedDraft.severity) {
       setMessage('至少填写口语描述，或补齐标题、实际表现、期望表现和优先级。');
       return;
@@ -448,13 +489,16 @@ export function App() {
         primaryCaptureId: capture.id,
         tags: [completedDraft.bugType].filter(Boolean),
         references: referencesFromDraft(completedDraft),
-        annotationIds: selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id)
+        assets: draftAssets.map(({ id: _id, ...asset }) => asset),
+        annotationIds: annotationIdsOverride ?? (selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id))
       })
     });
     setMessage(`已保存 Bug ${body.bug.id}`);
     setBugDetail(body);
     setSelectedBugId(body.bug.id);
     setDraft(emptyDraft);
+    setDraftAssets([]);
+    setQuickComment(undefined);
     lastAnnotationIdRef.current = '';
     setSelectedAnnotationIds([]);
     await refreshBugs();
@@ -467,12 +511,24 @@ export function App() {
     if (selectedBugId === bugId) await loadBugDetail(bugId);
   }
 
+  async function addDraftAssetFiles(files: FileList | File[], source: DraftAsset['kind']) {
+    const imageFiles = Array.from(files).filter((file) => assetMimeTypes.includes(file.type));
+    if (!imageFiles.length) return;
+    const assets = await Promise.all(imageFiles.slice(0, 6).map((file) => fileToDraftAsset(file, source)));
+    setDraftAssets((current) => [...current, ...assets].slice(0, 8));
+    setMessage(`已加入 ${assets.length} 张对比截图。`);
+  }
+
+  function removeDraftAsset(id: string) {
+    setDraftAssets((current) => current.filter((asset) => asset.id !== id));
+  }
+
   async function normalizeBug() {
     if (!session || !capture) return;
     setBusy('AI 正在整理描述');
     setMessage('');
     try {
-      const body = await api<{ result: any }>('/api/ai/normalize-bug', { method: 'POST', body: JSON.stringify({ sessionId: session.id, captureId: capture.id, annotationIds: selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id), sourceText: draft.comment || draft.actual, strictness: 'strict' }) });
+      const body = await api<{ result: any }>('/api/ai/normalize-bug', { method: 'POST', body: JSON.stringify({ sessionId: session.id, captureId: capture.id, annotationIds: selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id), sourceText: draft.comment || draft.actual, strictness: 'strict', assets: draftAssets.map((asset) => ({ label: asset.label, fileName: asset.fileName, mimeType: asset.mimeType, dataUrl: asset.dataUrl })) }) });
       if (body.result.kind === 'draft') {
         const next = body.result.draft;
         setDraft((current) => ({ ...current, title: next.title, actual: next.actual, expected: next.expected, severity: next.severity }));
@@ -501,6 +557,7 @@ export function App() {
     const slot = deviceSlots[device];
     if (!slot) return;
     cancelDrawing();
+    setQuickComment(undefined);
     setActiveDevice(device);
     setSession(slot.session);
     setCapture(slot.capture);
@@ -537,6 +594,7 @@ export function App() {
 
   function selectCapture(item: Capture) {
     setCapture(item);
+    setQuickComment(undefined);
     setDeviceSlots((current) => {
       const slot = current[activeDevice];
       if (!slot || slot.session.id !== item.sessionId) return current;
@@ -752,6 +810,9 @@ export function App() {
                     dragStart={dragStart}
                     rectPreview={rectPreview}
                     freehand={freehand}
+                    quickComment={quickComment?.captureId === deviceSlots[device]?.capture?.id ? quickComment : undefined}
+                    setQuickComment={setQuickComment}
+                    onSaveQuickComment={saveQuickComment}
                     onActivate={activateDevice}
                     onPointerDown={onCanvasPointerDown}
                     onPointerMove={onCanvasPointerMove}
@@ -771,7 +832,7 @@ export function App() {
             ) : (
               <>
                 <div className="mk-panel-toolbar"><strong>检查器</strong><button data-testid="toggle-right-panel" aria-label="收起检查器" onClick={() => setRightCollapsed(true)}>›</button></div>
-                <BugPanel draft={draft} setDraft={setDraft} annotations={annotations} selectedAnnotationIds={selectedAnnotationIds} setSelectedAnnotationIds={setSelectedAnnotationIds} saveBug={saveBug} normalizeBug={normalizeBug} aiStatus={aiStatus} activeTarget={activeTarget} lastPoint={lastPoint} session={session} capture={capture} updateAnnotation={updateAnnotation} deleteAnnotation={deleteAnnotation} />
+                <BugPanel draft={draft} setDraft={setDraft} draftAssets={draftAssets} addDraftAssetFiles={addDraftAssetFiles} removeDraftAsset={removeDraftAsset} annotations={annotations} selectedAnnotationIds={selectedAnnotationIds} setSelectedAnnotationIds={setSelectedAnnotationIds} saveBug={() => saveBug()} normalizeBug={normalizeBug} aiStatus={aiStatus} activeTarget={activeTarget} lastPoint={lastPoint} session={session} capture={capture} updateAnnotation={updateAnnotation} deleteAnnotation={deleteAnnotation} />
               </>
             )}
           </aside>
@@ -798,6 +859,9 @@ function DeviceFrame(props: {
   dragStart: Point | undefined;
   rectPreview: Rect | undefined;
   freehand: Point[];
+  quickComment: QuickComment | undefined;
+  setQuickComment: Dispatch<SetStateAction<QuickComment | undefined>>;
+  onSaveQuickComment: (saveAsBug?: boolean) => void | Promise<void>;
   onActivate: (device: DeviceKey) => void;
   onPointerDown: (event: PointerEvent<HTMLElement>) => void;
   onPointerMove: (event: PointerEvent<HTMLElement>) => void;
@@ -845,12 +909,62 @@ function DeviceFrame(props: {
                 {props.freehand.length > 1 ? <polyline className="mk-ann-freehand" points={props.freehand.map((p) => `${p.x},${p.y}`).join(' ')} /> : null}
               </svg>
             ) : null}
+            {props.active && props.quickComment ? (
+              <QuickCommentPopover
+                comment={props.quickComment}
+                imageSize={capture.imageSize}
+                onChange={(text) => props.setQuickComment((current) => current ? { ...current, text } : current)}
+                onClose={() => props.setQuickComment(undefined)}
+                onSave={() => props.onSaveQuickComment(false)}
+                onSaveBug={() => props.onSaveQuickComment(true)}
+              />
+            ) : null}
           </div>
         ) : (
           <p className="mk-empty">暂无{label.title}截图。</p>
         )}
       </div>
     </article>
+  );
+}
+
+function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width: number; height: number }; onChange: (text: string) => void; onClose: () => void; onSave: () => void | Promise<void>; onSaveBug: () => void | Promise<void> }) {
+  const rect = props.comment.rect;
+  const left = ((rect.x + Math.min(rect.width, 28)) / props.imageSize.width) * 100;
+  const top = ((rect.y + Math.min(rect.height, 28)) / props.imageSize.height) * 100;
+  const clampedLeft = Math.min(92, Math.max(3, left));
+  const clampedTop = Math.min(86, Math.max(3, top));
+  const rightAnchored = clampedLeft > 62;
+  const bottomAnchored = clampedTop > 64;
+  const style: CSSProperties = {
+    ...(rightAnchored ? { right: `${Math.min(92, Math.max(3, 100 - clampedLeft))}%` } : { left: `${clampedLeft}%` }),
+    ...(bottomAnchored ? { bottom: `${Math.min(86, Math.max(3, 100 - clampedTop))}%` } : { top: `${clampedTop}%` })
+  };
+  return (
+    <div
+      className={['mk-quick-comment-popover', rightAnchored ? 'is-right-anchored' : '', bottomAnchored ? 'is-bottom-anchored' : ''].filter(Boolean).join(' ')}
+      data-testid="quick-comment-popover"
+      style={style}
+      role="dialog"
+      aria-label="快速评论"
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          props.onClose();
+        }
+        if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && props.comment.text.trim()) {
+          event.preventDefault();
+          void props.onSave();
+        }
+      }}
+    >
+      <div className="mk-quick-comment-head"><strong>快速评论</strong><button aria-label="关闭快速评论" onClick={props.onClose}>×</button></div>
+      <textarea data-testid="quick-comment-input" autoFocus value={props.comment.text} onChange={(event) => props.onChange(event.currentTarget.value)} placeholder="直接描述这个标注，比如：这里的按钮颜色和 Figma 不一致" />
+      <div className="mk-quick-comment-actions">
+        <button onClick={() => props.onSave()} disabled={!props.comment.text.trim()}>保存评论</button>
+        <button className="primary" data-testid="quick-comment-save-bug" onClick={() => props.onSaveBug()} disabled={!props.comment.text.trim()}>保存为 Bug</button>
+      </div>
+    </div>
   );
 }
 
@@ -886,9 +1000,37 @@ function Home(props: { url: string; setUrl: (value: string) => void; viewportKey
   );
 }
 
-function BugPanel(props: { draft: DraftBug; setDraft: Dispatch<SetStateAction<DraftBug>>; annotations: Annotation[]; selectedAnnotationIds: string[]; setSelectedAnnotationIds: Dispatch<SetStateAction<string[]>>; saveBug: () => void; normalizeBug: () => void; aiStatus: { enabled: boolean; provider: string; reason?: string }; activeTarget: DomTarget | undefined; lastPoint: Point | undefined; session: Session; capture: Capture; updateAnnotation: (id: string, patch: Partial<Annotation>) => Promise<void>; deleteAnnotation: (id: string) => Promise<void> }) {
+function BugPanel(props: {
+  draft: DraftBug;
+  setDraft: Dispatch<SetStateAction<DraftBug>>;
+  draftAssets: DraftAsset[];
+  addDraftAssetFiles: (files: FileList | File[], source: DraftAsset['kind']) => Promise<void>;
+  removeDraftAsset: (id: string) => void;
+  annotations: Annotation[];
+  selectedAnnotationIds: string[];
+  setSelectedAnnotationIds: Dispatch<SetStateAction<string[]>>;
+  saveBug: () => void;
+  normalizeBug: () => void;
+  aiStatus: AiStatus;
+  activeTarget: DomTarget | undefined;
+  lastPoint: Point | undefined;
+  session: Session;
+  capture: Capture;
+  updateAnnotation: (id: string, patch: Partial<Annotation>) => Promise<void>;
+  deleteAnnotation: (id: string) => Promise<void>;
+}) {
   const update = (key: keyof DraftBug, value: string) => props.setDraft((current) => ({ ...current, [key]: value }));
   const canSave = Boolean((props.draft.title && props.draft.actual && props.draft.expected && props.draft.severity) || props.draft.comment.trim());
+  const onAssetInput = (event: ChangeEvent<HTMLInputElement>) => {
+    if (event.currentTarget.files) void props.addDraftAssetFiles(event.currentTarget.files, 'uploaded-screenshot');
+    event.currentTarget.value = '';
+  };
+  const onDrop = (event: ReactDragEvent<HTMLElement>) => {
+    const files = Array.from(event.dataTransfer.files).filter((file) => assetMimeTypes.includes(file.type));
+    if (!files.length) return;
+    event.preventDefault();
+    void props.addDraftAssetFiles(files, 'uploaded-screenshot');
+  };
   return (
     <div className="mk-bug-panel">
       <section className="mk-panel-section mk-draft-card">
@@ -909,7 +1051,22 @@ function BugPanel(props: { draft: DraftBug; setDraft: Dispatch<SetStateAction<Dr
           <label>原始需求链接<input data-testid="requirement-url" type="url" value={props.draft.requirementUrl} onChange={(event) => update('requirementUrl', event.currentTarget.value)} placeholder="飞书需求 / PRD / issue URL" /></label>
           <label>Figma 或设计图链接<input data-testid="design-url" type="url" value={props.draft.designUrl} onChange={(event) => update('designUrl', event.currentTarget.value)} placeholder="Figma / 对比截图 URL" /></label>
         </details>
-        <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>整理描述（{props.aiStatus.provider}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>快速保存</button></div>
+        <section className="mk-asset-dropzone" data-testid="asset-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+          <div><strong>截图 / 对比证据</strong><span>可在工作台任意位置 Cmd+V 粘贴截图，或拖入 / 上传 Figma、测试截图。</span></div>
+          <label className="mk-upload-button">上传截图<input data-testid="asset-upload-input" type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={onAssetInput} /></label>
+          {props.draftAssets.length ? (
+            <div className="mk-asset-preview-list" data-testid="asset-preview-list">
+              {props.draftAssets.map((asset) => (
+                <article key={asset.id}>
+                  <img src={asset.dataUrl} alt={asset.label} />
+                  <div><strong>{asset.label}</strong><span>{asset.fileName} · {formatBytes(asset.sizeBytes)}</span></div>
+                  <button type="button" onClick={() => props.removeDraftAsset(asset.id)}>移除</button>
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </section>
+        <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>整理描述（{props.aiStatus.provider}{props.aiStatus.supportsImages ? '+图片' : ''}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>快速保存</button></div>
         <small>快捷：1/2/3/4 设 P0/P1/P2/P3，A 快速保存，Z 撤销标注，O 圈选，D 自由画。</small>
         {!props.aiStatus.enabled ? <small>{props.aiStatus.reason}</small> : null}
       </section>
@@ -954,6 +1111,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
               <h2>{bug.title}</h2>
               <p>{bug.actual}</p>
               <span data-testid="bug-annotation-count">{bug.annotationCount ?? 0} 条标注</span>
+              {bug.assetCount ? <span className="mk-reference-count">{bug.assetCount} 张截图</span> : null}
               {bug.references?.length ? <span className="mk-reference-count">{bug.references.length} 个引用</span> : null}
               <button data-testid="export-evidence" onClick={(event) => { event.stopPropagation(); props.exportBug(bug.id); }}>导出证据</button>
               {bug.exportPath ? <small>{bug.exportPath}</small> : null}
@@ -984,13 +1142,14 @@ function BugDetailPanel({ detail, patchBug, exportBug }: { detail: BugDetail | u
       <button onClick={() => patchBug(detail.bug.id, edit)}>保存详情修改</button>
       <dl className="mk-detail-meta"><dt>来源 URL</dt><dd>{detail.bug.sourceUrl}</dd><dt>最终 URL</dt><dd>{detail.bug.finalUrl}</dd><dt>导出路径</dt><dd>{detail.bug.exportPath || '尚未导出'}</dd></dl>
       {detail.bug.references.length ? <section className="mk-detail-evidence"><h3>引用 / 对比</h3>{detail.bug.references.map((reference) => <article key={`${reference.kind}-${reference.url}`}><strong>{reference.label ?? reference.kind}</strong><p>{reference.url}</p></article>)}</section> : null}
+      {detail.assets.length ? <section className="mk-detail-evidence"><h3>截图 / 对比证据</h3><div className="mk-detail-assets">{detail.assets.map((asset) => <article key={asset.id}><img src={`/api/bug-assets/${asset.id}/image`} alt={asset.label || asset.fileName} /><strong>{asset.label || asset.kind}</strong><p>{asset.fileName} · {formatBytes(asset.sizeBytes)}</p></article>)}</div></section> : null}
       <section className="mk-detail-evidence"><h3>证据</h3>{detail.annotations.map((annotation, index) => <article key={annotation.id}><strong>#{index + 1} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong><p>{annotation.note || detail.bug.title}</p>{annotation.target ? <small>{annotation.target.selector}</small> : null}</article>)}{detail.annotations.length === 0 ? <p className="mk-empty">还没有绑定标注证据。</p> : null}</section>
     </aside>
   );
 }
 
-function Settings({ aiStatus }: { aiStatus: { enabled: boolean; provider: string; reason?: string } }) {
-  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / Z 撤销标注 / 1-4 优先级 / Cmd+S 保存</dd></dl></section>;
+function Settings({ aiStatus }: { aiStatus: AiStatus }) {
+  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}{aiStatus.supportsImages ? '，支持图片输入' : ''}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型；仅在开启 MMF / multimodal provider 并点击整理描述时发送对比截图。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / Z 撤销标注 / 1-4 优先级 / Cmd+S 保存 / Cmd+V 粘贴截图</dd></dl></section>;
 }
 
 function AnnotationShape({ annotation, selected, index }: { annotation: Annotation; selected: boolean; index: number }) {
@@ -1035,6 +1194,23 @@ function referencesFromDraft(draft: DraftBug): BugReference[] {
   if (isHttpUrl(draft.requirementUrl)) references.push({ kind: 'requirement', url: draft.requirementUrl.trim(), label: '原始需求' });
   if (isHttpUrl(draft.designUrl)) references.push({ kind: 'design', url: draft.designUrl.trim(), label: /figma/i.test(draft.designUrl) ? 'Figma' : '设计/对比图' });
   return references;
+}
+
+function fileToDraftAsset(file: File, kind: DraftAsset['kind']): Promise<DraftAsset> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('读取截图失败'));
+    reader.onload = () => resolve({
+      id: `draft_asset_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      kind,
+      fileName: file.name || (kind === 'pasted-screenshot' ? '粘贴截图.png' : '上传截图.png'),
+      mimeType: file.type,
+      sizeBytes: file.size,
+      dataUrl: String(reader.result),
+      label: kind === 'pasted-screenshot' ? '粘贴截图' : '上传截图'
+    });
+    reader.readAsDataURL(file);
+  });
 }
 
 function isHttpUrl(value: string): boolean {
@@ -1111,6 +1287,12 @@ function safeHost(value: string): string {
   } catch {
     return value;
   }
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function bugSelectorLabel(bug: Bug): string {

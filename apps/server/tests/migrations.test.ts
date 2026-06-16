@@ -12,8 +12,8 @@ describe('SQLite migrations', () => {
     applyMigrations(db);
     applyMigrations(db);
 
-    expect(getAppliedMigrationVersions(db)).toEqual([1, 2]);
-    expect(getUserVersion(db)).toBe(2);
+    expect(getAppliedMigrationVersions(db)).toEqual([1, 2, 3]);
+    expect(getUserVersion(db)).toBe(3);
     expect(tableNames(db)).toEqual(expect.arrayContaining([
       'schema_migrations',
       'settings',
@@ -22,6 +22,7 @@ describe('SQLite migrations', () => {
       'annotations',
       'bugs',
       'bug_annotations',
+      'bug_assets',
       'ai_jobs',
       'ai_runs'
     ]));

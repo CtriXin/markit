@@ -417,6 +417,35 @@
 .mk-ann-pin.is-selected { fill: #1677ff; stroke: #fff; }
 .mk-ann-freehand { fill: none; stroke: #1677ff; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 4px rgba(22,119,255,.25)); }
 .mk-ann-label { fill: #fff; paint-order: stroke; stroke: #1f1e1b; stroke-width: 5px; font-size: 18px; font-weight: 950; pointer-events: none; }
+.mk-quick-comment-popover {
+  position: absolute;
+  z-index: 8;
+  display: grid;
+  gap: 8px;
+  width: min(312px, calc(100% - 20px));
+  transform: translate(12px, 12px);
+  border: 1px solid rgba(18, 31, 54, .14);
+  border-radius: 12px;
+  padding: 10px;
+  background: #fffefb;
+  box-shadow: 0 22px 52px rgba(15, 23, 42, .22), 0 0 0 1px rgba(255,255,255,.7) inset;
+  line-height: 1.35;
+}
+.mk-quick-comment-popover.is-right-anchored { transform: translate(-12px, 12px); }
+.mk-quick-comment-popover.is-bottom-anchored { transform: translate(12px, -12px); }
+.mk-quick-comment-popover.is-right-anchored.is-bottom-anchored { transform: translate(-12px, -12px); }
+.mk-quick-comment-head, .mk-quick-comment-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mk-quick-comment-head strong { color: #172033; font-size: 13px; letter-spacing: -.01em; }
+.mk-quick-comment-head button { width: 24px; min-height: 24px; border: 0; padding: 0; color: #6b7280; background: transparent; font-size: 18px; }
+.mk-quick-comment-popover textarea {
+  min-height: 78px;
+  border-color: #d7dde7;
+  color: #18243a;
+  background: #f8fafc;
+  resize: vertical;
+}
+.mk-quick-comment-actions button { min-height: 30px; background: #f2f5f9; color: #243047; }
+.mk-quick-comment-actions button.primary { color: #fff; border-color: var(--mk-blue); background: var(--mk-blue); }
 
 .mk-panel-toolbar {
   position: sticky;
@@ -467,6 +496,53 @@
   font-weight: 900;
 }
 .mk-reference-fields label { margin-top: 8px; }
+.mk-asset-dropzone {
+  display: grid;
+  gap: 9px;
+  border: 1px dashed rgba(110, 231, 183, .35);
+  border-radius: 11px;
+  padding: 10px;
+  background: linear-gradient(180deg, rgba(110,231,183,.06), rgba(22,119,255,.045));
+}
+.mk-asset-dropzone > div:first-child { display: grid; gap: 2px; }
+.mk-asset-dropzone strong { color: #f1ece5; font-size: 12px; }
+.mk-asset-dropzone span { color: #9b948c; font-size: 12px; line-height: 1.45; }
+.mk-upload-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-height: 30px;
+  border: 1px solid var(--mk-border);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: #e8e1d8;
+  background: #24231f;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.mk-upload-button input { display: none; }
+.mk-asset-preview-list { display: grid; gap: 7px; }
+.mk-asset-preview-list article {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 9px;
+  padding: 7px;
+  background: #181714;
+}
+.mk-asset-preview-list img {
+  width: 48px;
+  height: 36px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #fff;
+}
+.mk-asset-preview-list div { min-width: 0; display: grid; gap: 1px; }
+.mk-asset-preview-list button { min-width: 44px; min-height: 28px; padding: 0 8px; color: #ff9ea4; background: #241b1a; }
 .mk-ann-list { display: grid; gap: 8px; }
 .mk-ann-list h3 { margin: 0; font-size: 13px; }
 .mk-ann-list article { display: grid; gap: 7px; border: 1px solid var(--mk-border); border-radius: 10px; padding: 9px; background: #211f1b; }
@@ -512,6 +588,10 @@
 .mk-detail-evidence article { border: 1px solid var(--mk-border); border-radius: 10px; padding: 10px; background: #1a1915; }
 .mk-detail-evidence p { margin: 6px 0; color: #aaa39a; }
 .mk-detail-evidence small { overflow-wrap: anywhere; }
+.mk-detail-assets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.mk-detail-assets article { display: grid; gap: 7px; }
+.mk-detail-assets img { width: 100%; max-height: 150px; border-radius: 8px; object-fit: cover; background: #fff; }
+.mk-detail-assets strong, .mk-detail-assets p { overflow-wrap: anywhere; }
 .mk-settings dl { display: grid; grid-template-columns: 160px 1fr; gap: 12px; border: 1px solid var(--mk-border); border-radius: 14px; padding: 18px; background: #201f1c; }
 .mk-settings dt { font-weight: 900; }
 .mk-settings dd { margin: 0; color: #aaa39a; }

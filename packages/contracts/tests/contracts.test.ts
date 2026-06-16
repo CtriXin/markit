@@ -6,8 +6,10 @@ import {
   healthResponseSchema,
   markitActionRequestSchema,
   markitAnnotationSchema,
+  markitBugAssetSchema,
   markitBugSchema,
   markitCaptureSchema,
+  normalizeBugRequestSchema,
   markitSessionSchema,
   rectSchema,
   viewportPresets,
@@ -98,6 +100,16 @@ describe('core DTO contracts', () => {
       createdAt: now,
       updatedAt: now
     }).severity).toBe('P1');
+    expect(markitBugAssetSchema.parse({
+      id: 'asset_1',
+      bugId: 'bug_1',
+      kind: 'pasted-screenshot',
+      fileName: 'figma-compare.png',
+      mimeType: 'image/png',
+      sizeBytes: 1200,
+      label: 'Figma 对比截图',
+      createdAt: now
+    }).kind).toBe('pasted-screenshot');
   });
 });
 
@@ -107,6 +119,20 @@ describe('API and AI contracts', () => {
   });
 
   it('validates AI draft and clarification contracts', () => {
+    expect(normalizeBugRequestSchema.parse({
+      sessionId: 'ses_1',
+      captureId: 'cap_1',
+      annotationIds: ['ann_1'],
+      sourceText: '按钮颜色不对，应该和 Figma 一致',
+      strictness: 'strict',
+      assets: [{
+        label: '粘贴截图',
+        fileName: 'paste.png',
+        mimeType: 'image/png',
+        dataUrl: 'data:image/png;base64,iVBORw0KGgo='
+      }]
+    }).assets).toHaveLength(1);
+
     const draft = bugRequirementDraftSchema.parse({
       title: 'Button clipped',
       problemType: 'visual',

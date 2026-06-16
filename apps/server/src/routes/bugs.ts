@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { extname, join } from 'node:path';
 import { PNG } from 'pngjs';
 import { Router } from 'express';
 import type { ServerContext } from '../context.js';
 import { MarkitHttpError } from '../url-safety.js';
 import { all, asyncHandler, first, nowIso, parseJson, type Row } from './helpers.js';
-import { mapAnnotation, mapBug, mapCapture } from './mappers.js';
+import { mapAnnotation, mapBug, mapBugAsset, mapCapture } from './mappers.js';
+
+const maxAssetBytes = 8 * 1024 * 1024;
+const allowedAssetTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 export function bugsRouter(context: ServerContext): Router {
   const router = Router();
@@ -16,7 +19,7 @@ export function bugsRouter(context: ServerContext): Router {
     const rows = status && status !== 'all'
       ? all(context.database.db, 'SELECT * FROM bugs WHERE status = ? ORDER BY created_at DESC', [status])
       : all(context.database.db, 'SELECT * FROM bugs ORDER BY created_at DESC');
-    res.json({ bugs: rows.map((row) => ({ ...mapBug(row), annotationCount: countRelations(context, String(row.id)) })) });
+    res.json({ bugs: rows.map((row) => ({ ...mapBug(row), annotationCount: countRelations(context, String(row.id)), assetCount: countAssets(context, String(row.id)) })) });
   });
 
   router.post('/api/bugs', asyncHandler(async (req, res) => {
@@ -31,12 +34,20 @@ export function bugsRouter(context: ServerContext): Router {
     if (Array.isArray(req.body.annotationIds)) {
       req.body.annotationIds.forEach((annotationId: unknown, index: number) => addRelation(context, id, String(annotationId), index));
     }
+    await persistBugAssets(context, id, req.body.assets);
     await context.database.save();
     res.status(201).json(await bugDetail(context, id));
   }));
 
   router.get('/api/bugs/:id', asyncHandler(async (req, res) => {
     res.json(await bugDetail(context, String(req.params.id)));
+  }));
+
+  router.get('/api/bug-assets/:id/image', asyncHandler(async (req, res) => {
+    const asset = first(context.database.db, 'SELECT * FROM bug_assets WHERE id = ?', [String(req.params.id)]);
+    if (!asset) throw new MarkitHttpError(404, 'bug_asset_not_found', 'Bug asset not found');
+    res.type(String(asset.mime_type));
+    res.send(await readFile(String(asset.file_path)));
   }));
 
   router.patch('/api/bugs/:id', asyncHandler(async (req, res) => {
@@ -115,6 +126,11 @@ function countRelations(context: ServerContext, bugId: string): number {
   return Number(row?.count ?? 0);
 }
 
+function countAssets(context: ServerContext, bugId: string): number {
+  const row = first(context.database.db, 'SELECT COUNT(*) AS count FROM bug_assets WHERE bug_id = ?', [bugId]);
+  return Number(row?.count ?? 0);
+}
+
 async function bugDetail(context: ServerContext, id: string) {
   const bug = first(context.database.db, 'SELECT * FROM bugs WHERE id = ?', [id]);
   if (!bug) throw new MarkitHttpError(404, 'bug_not_found', 'Bug not found');
@@ -127,13 +143,69 @@ async function bugDetail(context: ServerContext, id: string) {
     const capture = first(context.database.db, 'SELECT * FROM captures WHERE id = ?', [captureId]);
     return capture ? mapCapture(capture) : undefined;
   }).filter(Boolean);
-  return { bug: { ...mapBug(bug), annotationCount: annotations.length }, annotations, captures };
+  const assets = await assetsForBug(context, id);
+  return { bug: { ...mapBug(bug), annotationCount: annotations.length, assetCount: assets.length }, annotations, captures, assets };
+}
+
+async function assetsForBug(context: ServerContext, id: string) {
+  return all(context.database.db, 'SELECT * FROM bug_assets WHERE bug_id = ? ORDER BY created_at ASC', [id]).map(mapBugAsset);
+}
+
+async function persistBugAssets(context: ServerContext, bugId: string, value: unknown) {
+  if (!Array.isArray(value)) return;
+  const assetsDir = join(context.dataDir, 'assets', 'bugs', bugId);
+  await mkdir(assetsDir, { recursive: true });
+  for (const raw of value.slice(0, 8)) {
+    const input = normalizeAssetInput(raw);
+    if (!input) continue;
+    const id = `asset_${randomUUID()}`;
+    const extension = extensionForMime(input.mimeType, input.fileName);
+    const fileName = `${id}${extension}`;
+    const filePath = join(assetsDir, fileName);
+    await writeFile(filePath, input.buffer);
+    context.database.db.run(
+      `INSERT INTO bug_assets (id, bug_id, kind, file_name, mime_type, size_bytes, file_path, label, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, bugId, input.kind, input.fileName, input.mimeType, input.buffer.length, filePath, input.label || null, nowIso()]
+    );
+  }
+}
+
+function normalizeAssetInput(value: unknown): { kind: string; fileName: string; mimeType: string; label: string; buffer: Buffer } | undefined {
+  const input = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  const mimeType = String(input.mimeType ?? '').toLowerCase();
+  if (!allowedAssetTypes.has(mimeType)) return undefined;
+  const dataUrl = String(input.dataUrl ?? '');
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match || match[1]?.toLowerCase() !== mimeType) return undefined;
+  const buffer = Buffer.from(match[2] ?? '', 'base64');
+  if (!buffer.length || buffer.length > maxAssetBytes) return undefined;
+  return {
+    kind: String(input.kind ?? 'compare-image').slice(0, 40),
+    fileName: sanitizeFileName(String(input.fileName ?? `screenshot.${extensionForMime(mimeType).slice(1)}`)),
+    mimeType,
+    label: String(input.label ?? '').slice(0, 100),
+    buffer
+  };
+}
+
+function sanitizeFileName(value: string): string {
+  return value.replace(/[^\w.\-()\u4e00-\u9fa5]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 120) || 'screenshot.png';
+}
+
+function extensionForMime(mimeType: string, fileName = ''): string {
+  const current = extname(fileName).toLowerCase();
+  if (['.png', '.jpg', '.jpeg', '.webp'].includes(current)) return current;
+  if (mimeType === 'image/jpeg') return '.jpg';
+  if (mimeType === 'image/webp') return '.webp';
+  return '.png';
 }
 
 async function exportBug(context: ServerContext, id: string) {
   const detail = await bugDetail(context, id);
   const exportDir = join(context.dataDir, 'exports', id);
   await mkdir(join(exportDir, 'captures'), { recursive: true });
+  await mkdir(join(exportDir, 'assets'), { recursive: true });
   const groups = new Map<string, Row[]>();
   for (const annotation of detail.annotations as Array<{ id: string; captureId: string }>) {
     const row = first(context.database.db, 'SELECT * FROM annotations WHERE id = ?', [annotation.id]);
@@ -157,6 +229,12 @@ async function exportBug(context: ServerContext, id: string) {
     await writeFile(join(captureDir, 'metadata.json'), JSON.stringify(mapCapture(capture), null, 2));
     await writeFile(join(captureDir, 'dom-targets.json'), await readFile(String(capture.dom_targets_path), 'utf8'));
   }
+  const assets = await assetsForBug(context, id);
+  for (const asset of assets) {
+    const row = first(context.database.db, 'SELECT * FROM bug_assets WHERE id = ?', [asset.id]);
+    if (!row) continue;
+    await copyFile(String(row.file_path), join(exportDir, 'assets', exportedAssetName(asset)));
+  }
   const markdown = renderMarkdown(detail, groups);
   await writeFile(join(exportDir, 'bug.md'), markdown);
   await writeFile(join(exportDir, 'bug.json'), JSON.stringify(detail, null, 2));
@@ -164,12 +242,19 @@ async function exportBug(context: ServerContext, id: string) {
   return { exportPath: exportDir, markdown };
 }
 
-function renderMarkdown(detail: { bug: ReturnType<typeof mapBug>; annotations: unknown[] }, groups: Map<string, Row[]>): string {
+function renderMarkdown(detail: { bug: ReturnType<typeof mapBug>; annotations: unknown[]; assets?: ReturnType<typeof mapBugAsset>[] }, groups: Map<string, Row[]>): string {
   const bug = detail.bug;
   const references = bug.references.length
     ? `\n## References\n\n${bug.references.map((reference) => `- ${reference.label ?? reference.kind}: ${reference.url}`).join('\n')}\n`
     : '';
-  return `# ${bug.title}\n\n- Severity: ${bug.severity}\n- Status: ${bug.status}\n- Source URL: ${bug.sourceUrl}\n- Final URL: ${bug.finalUrl}\n- Tags: ${bug.tags.join(', ') || 'none'}\n\n## Actual\n\n${bug.actual}\n\n## Expected\n\n${bug.expected}\n${references}\n## Annotations\n\n${[...groups.entries()].map(([captureId, annotations]) => `### ${captureId}\n\n${annotations.map((annotation) => `- ${annotation.id}: ${annotation.note}`).join('\n')}`).join('\n\n')}\n`;
+  const assets = detail.assets?.length
+    ? `\n## Compare Screenshots\n\n${detail.assets.map((asset) => `- ${asset.label || asset.kind}: [${asset.fileName}](assets/${exportedAssetName(asset)})`).join('\n')}\n`
+    : '';
+  return `# ${bug.title}\n\n- Severity: ${bug.severity}\n- Status: ${bug.status}\n- Source URL: ${bug.sourceUrl}\n- Final URL: ${bug.finalUrl}\n- Tags: ${bug.tags.join(', ') || 'none'}\n\n## Actual\n\n${bug.actual}\n\n## Expected\n\n${bug.expected}\n${references}${assets}\n## Annotations\n\n${[...groups.entries()].map(([captureId, annotations]) => `### ${captureId}\n\n${annotations.map((annotation) => `- ${annotation.id}: ${annotation.note}`).join('\n')}`).join('\n\n')}\n`;
+}
+
+function exportedAssetName(asset: ReturnType<typeof mapBugAsset>): string {
+  return `${asset.id}-${asset.fileName}`;
 }
 
 function drawAnnotation(png: PNG, annotation: Row) {

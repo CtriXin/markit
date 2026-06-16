@@ -117,5 +117,24 @@ CREATE INDEX IF NOT EXISTS idx_ai_jobs_session_id ON ai_jobs(session_id);
     sql: `
 ALTER TABLE bugs ADD COLUMN references_json TEXT NOT NULL DEFAULT '[]';
 `
+  },
+  {
+    version: 3,
+    name: 'bug_assets',
+    sql: `
+CREATE TABLE IF NOT EXISTS bug_assets (
+  id TEXT PRIMARY KEY,
+  bug_id TEXT NOT NULL REFERENCES bugs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  file_path TEXT NOT NULL,
+  label TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bug_assets_bug_id ON bug_assets(bug_id);
+`
   }
 ];

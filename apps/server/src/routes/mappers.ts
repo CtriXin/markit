@@ -66,3 +66,16 @@ export function mapBug(row: Row) {
     updatedAt: String(row.updated_at)
   };
 }
+
+export function mapBugAsset(row: Row) {
+  return {
+    id: String(row.id),
+    bugId: String(row.bug_id),
+    kind: String(row.kind),
+    fileName: String(row.file_name),
+    mimeType: String(row.mime_type),
+    sizeBytes: Number(row.size_bytes),
+    label: row.label ? String(row.label) : undefined,
+    createdAt: String(row.created_at)
+  };
+}

@@ -11,7 +11,8 @@ export function aiRouter(context: ServerContext): Router {
 
   router.get('/api/ai/status', (_req, res) => {
     const status = resolveProvider();
-    res.json(status);
+    const { apiKey: _apiKey, ...publicStatus } = status;
+    res.json(publicStatus);
   });
 
   router.post('/api/ai/normalize-bug', asyncHandler(async (req, res) => {
@@ -65,7 +66,7 @@ export function aiRouter(context: ServerContext): Router {
   return router;
 }
 
-type ProviderStatus = { enabled: boolean; provider: 'off' | 'mock' | 'openai-compatible' | 'local-mms-mmf'; model?: string; baseUrl?: string; apiKey?: string; reason?: string };
+type ProviderStatus = { enabled: boolean; provider: 'off' | 'mock' | 'openai-compatible' | 'local-mms-mmf'; model?: string; baseUrl?: string; apiKey?: string; supportsImages?: boolean; reason?: string };
 
 function resolveProvider(): ProviderStatus {
   const provider = (process.env.MARKIT_AI_PROVIDER || 'off') as ProviderStatus['provider'];
@@ -74,12 +75,20 @@ function resolveProvider(): ProviderStatus {
     if (!process.env.MARKIT_MODEL_BASE_URL || !process.env.MARKIT_MODEL_API_KEY || !process.env.MARKIT_MODEL_ID) {
       return { enabled: false, provider, reason: 'Missing MARKIT_MODEL_BASE_URL, MARKIT_MODEL_API_KEY, or MARKIT_MODEL_ID' };
     }
-    return { enabled: true, provider, baseUrl: process.env.MARKIT_MODEL_BASE_URL, apiKey: process.env.MARKIT_MODEL_API_KEY, model: process.env.MARKIT_MODEL_ID };
+    return { enabled: true, provider, baseUrl: process.env.MARKIT_MODEL_BASE_URL, apiKey: process.env.MARKIT_MODEL_API_KEY, model: process.env.MARKIT_MODEL_ID, supportsImages: truthy(process.env.MARKIT_MODEL_MULTIMODAL) };
   }
   if (provider === 'local-mms-mmf') {
-    return { enabled: false, provider, reason: 'local-mms-mmf adapter is reserved until route file wiring is enabled' };
+    const baseUrl = process.env.MARKIT_MMF_BASE_URL || process.env.MARKIT_MODEL_BASE_URL || process.env.OPENAI_BASE_URL;
+    const apiKey = process.env.MARKIT_MMF_API_KEY || process.env.MARKIT_MODEL_API_KEY || process.env.OPENAI_API_KEY;
+    const model = process.env.MARKIT_MMF_MODEL_ID || process.env.MARKIT_MODEL_ID;
+    if (!baseUrl || !apiKey || !model) return { enabled: false, provider, reason: 'Missing MARKIT_MMF_BASE_URL, MARKIT_MMF_API_KEY, or MARKIT_MMF_MODEL_ID' };
+    return { enabled: true, provider, baseUrl, apiKey, model, supportsImages: process.env.MARKIT_MODEL_MULTIMODAL !== 'false' };
   }
   return { enabled: false, provider: 'off', reason: 'AI normalizer is disabled' };
+}
+
+function truthy(value: string | undefined): boolean {
+  return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').toLowerCase());
 }
 
 function mockNormalize(input: Record<string, unknown>) {
@@ -135,10 +144,7 @@ async function openAiCompatibleNormalize(input: Record<string, unknown>, status:
       model: status.model,
       temperature: 0,
       response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: 'You convert UI bug comments into strict JSON. Return either draft or clarification_required.' },
-        { role: 'user', content: JSON.stringify(input) }
-      ]
+      messages: buildNormalizeMessages(input, status)
     })
   });
   if (!response.ok) throw new MarkitHttpError(502, 'ai_provider_failed', `Provider failed: ${response.status}`);
@@ -148,6 +154,41 @@ async function openAiCompatibleNormalize(input: Record<string, unknown>, status:
   } catch {
     throw new MarkitHttpError(502, 'ai_response_invalid', 'Model did not return valid JSON');
   }
+}
+
+function buildNormalizeMessages(input: Record<string, unknown>, status: ProviderStatus) {
+  const system = { role: 'system', content: 'You convert UI bug comments and optional screenshots into strict JSON. Return either draft or clarification_required. If screenshots are provided, use them as original evidence and mention visible mismatch only when directly supported.' };
+  const text = JSON.stringify({ ...input, assets: imageAssetSummary(input.assets) });
+  if (!status.supportsImages) return [system, { role: 'user', content: text }];
+  const imageParts = imageAssets(input.assets).slice(0, 4).map((asset) => ({ type: 'image_url', image_url: { url: asset.dataUrl } }));
+  if (!imageParts.length) return [system, { role: 'user', content: text }];
+  return [
+    system,
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text },
+        ...imageParts
+      ]
+    }
+  ];
+}
+
+function imageAssets(value: unknown): Array<{ fileName: string; mimeType: string; label: string; dataUrl: string }> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (item && typeof item === 'object' ? item : {}) as Record<string, unknown>)
+    .filter((item) => typeof item.dataUrl === 'string' && /^data:image\/(png|jpeg|webp);base64,/i.test(item.dataUrl))
+    .map((item) => ({
+      fileName: String(item.fileName ?? 'screenshot.png'),
+      mimeType: String(item.mimeType ?? 'image/png'),
+      label: String(item.label ?? '截图证据'),
+      dataUrl: String(item.dataUrl)
+    }));
+}
+
+function imageAssetSummary(value: unknown) {
+  return imageAssets(value).map(({ dataUrl: _dataUrl, ...asset }) => asset);
 }
 
 function inferTitle(text: string): string {
