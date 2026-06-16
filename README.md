@@ -31,10 +31,10 @@ pnpm dev
 - Mobile/desktop viewport presets，Playwright screenshot 使用 CSS pixel scale。
 - Browse actions：click、scroll、type、key、reload、back、forward，并自动 recapture。
 - Capture actions：viewport capture 和 full-page capture。
-- Annotation tools：pin、rect（drag 或 two-click）、ellipse 截图式圈选、freehand 自由画、element pick、section/card 区块选择、最近标注撤销；右侧展示 selector/label/score。
+- Annotation tools：pin、element pick、section/card 区块选择、`区域标注` 分组（rect 框选为默认，ellipse 截图式圈选、freehand 自由画保留）、最近标注撤销；右侧展示 selector/label/score。
 - Bug workflow：少填字段快速保存、标注后快速评论 popup、Bug 类型 chips、保存 bug、bug list、bug detail、status/severity/title/actual/expected 编辑、需求/Figma 引用、工作台 Cmd+V 粘贴截图、拖入/上传对比证据、annotation relation。
 - Evidence export：每个 bug 生成 `bug.md`、`bug.json`、annotated screenshot、crop、metadata、DOM targets、粘贴/上传的原始截图证据。
-- AI normalizer：默认 off；`MARKIT_AI_PROVIDER=mock` 可本地验证；也预留 `openai-compatible` provider。
+- AI normalizer：`MARKIT_AI_PROVIDER=mock` 可本地验证；支持 `openai-compatible`、`local-mms-mmf`、`MARKIT_MMF_CONFIG` 配置文件和本机 MMS route auto-discovery。
 - 通胀二 Playwright E2E：`pnpm e2e:tongzhang-er` 会启动 fixture/app，模拟 5 个飞书 bug，生成截图和解析到 `.agent.local/evidence/tongzhang-er-final/`。
 - 真实公网 URL smoke：`pnpm e2e:public-url` 默认访问 `https://example.com/`，验证默认单端与可选双端真实 Playwright 渲染，证据输出到 `.agent.local/evidence/public-url-smoke/`。
 - Macromoss 真实站点 smoke：`pnpm e2e:macromoss` 访问 `https://macromoss.com/`，验证真实点击跳转、圈画、section 选择与可选双端，证据输出到 `.agent.local/evidence/macromoss-real/`。
@@ -55,7 +55,9 @@ MARKIT_MODEL_ID=...
 MARKIT_MODEL_MULTIMODAL=true
 ```
 
-本机 MMF/MMS 通道可用同一套 OpenAI-compatible 形状快速接入：
+本机 MMF/MMS 通道会优先用同一套 OpenAI-compatible 形状。最少配置可以完全省掉 env：Markit 会自动读取 `~/.config/mms/generated/model-routes.json`，并按 `mimo-v2.5,qwen3.6-plus,qwen3.5-plus,MiniMax-M2.7` 顺序优先选择支持 vision 的 route。
+
+如果要显式指定：
 
 ```bash
 MARKIT_AI_PROVIDER=local-mms-mmf
@@ -63,6 +65,15 @@ MARKIT_MMF_BASE_URL=http://127.0.0.1:xxxx/v1
 MARKIT_MMF_API_KEY=...
 MARKIT_MMF_MODEL_ID=...
 MARKIT_MODEL_MULTIMODAL=true
+```
+
+服务器部署推荐使用配置文件，不把 key 写进 repo：
+
+```bash
+cp config/mmf.config.example.json .markit/mmf.config.json
+MARKIT_MMF_API_KEY=...
+MARKIT_MMF_CONFIG=.markit/mmf.config.json
+pnpm dev
 ```
 
 `local-mms-mmf` 默认认为模型支持图片；如果临时只想走文本总结，设置 `MARKIT_MODEL_MULTIMODAL=false`。截图证据通过 JSON body 上传，默认 limit 为 `90mb`，可用 `MARKIT_JSON_LIMIT=120mb` 调整。

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { Router } from 'express';
 import type { ServerContext } from '../context.js';
 import { all, asyncHandler, first, nowIso, parseJson } from './helpers.js';
@@ -66,29 +68,172 @@ export function aiRouter(context: ServerContext): Router {
   return router;
 }
 
-type ProviderStatus = { enabled: boolean; provider: 'off' | 'mock' | 'openai-compatible' | 'local-mms-mmf'; model?: string; baseUrl?: string; apiKey?: string; supportsImages?: boolean; reason?: string };
+type ProviderStatus = { enabled: boolean; provider: 'off' | 'mock' | 'openai-compatible' | 'local-mms-mmf'; model?: string; baseUrl?: string; apiKey?: string; supportsImages?: boolean; configSource?: string; reason?: string };
+type MmfConfig = {
+  provider?: 'local-mms-mmf';
+  baseUrl?: string;
+  openaiBaseUrl?: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
+  modelId?: string;
+  model?: string;
+  multimodal?: boolean;
+  routeFile?: string;
+  capabilitiesFile?: string;
+  preferredModels?: string[];
+};
+type MmsRouteMatch = { baseUrl: string; apiKey: string; model: string; supportsImages: boolean; source: string };
 
 function resolveProvider(): ProviderStatus {
-  const provider = (process.env.MARKIT_AI_PROVIDER || 'off') as ProviderStatus['provider'];
+  const mmfConfig = loadMmfConfig();
+  const provider = (process.env.MARKIT_AI_PROVIDER || mmfConfig?.provider || (hasLocalMmsRoutes(mmfConfig) ? 'local-mms-mmf' : 'off')) as ProviderStatus['provider'];
   if (provider === 'mock') return { enabled: true, provider: 'mock', model: 'mock' };
   if (provider === 'openai-compatible') {
     if (!process.env.MARKIT_MODEL_BASE_URL || !process.env.MARKIT_MODEL_API_KEY || !process.env.MARKIT_MODEL_ID) {
       return { enabled: false, provider, reason: 'Missing MARKIT_MODEL_BASE_URL, MARKIT_MODEL_API_KEY, or MARKIT_MODEL_ID' };
     }
-    return { enabled: true, provider, baseUrl: process.env.MARKIT_MODEL_BASE_URL, apiKey: process.env.MARKIT_MODEL_API_KEY, model: process.env.MARKIT_MODEL_ID, supportsImages: truthy(process.env.MARKIT_MODEL_MULTIMODAL) };
+    return { enabled: true, provider, baseUrl: process.env.MARKIT_MODEL_BASE_URL, apiKey: process.env.MARKIT_MODEL_API_KEY, model: process.env.MARKIT_MODEL_ID, supportsImages: truthy(process.env.MARKIT_MODEL_MULTIMODAL), configSource: 'env' };
   }
   if (provider === 'local-mms-mmf') {
-    const baseUrl = process.env.MARKIT_MMF_BASE_URL || process.env.MARKIT_MODEL_BASE_URL || process.env.OPENAI_BASE_URL;
-    const apiKey = process.env.MARKIT_MMF_API_KEY || process.env.MARKIT_MODEL_API_KEY || process.env.OPENAI_API_KEY;
-    const model = process.env.MARKIT_MMF_MODEL_ID || process.env.MARKIT_MODEL_ID;
+    const envModel = process.env.MARKIT_MMF_MODEL_ID || process.env.MARKIT_MODEL_ID;
+    const configuredBaseUrl = process.env.MARKIT_MMF_BASE_URL || process.env.MARKIT_MODEL_BASE_URL || process.env.OPENAI_BASE_URL || mmfConfig?.baseUrl || mmfConfig?.openaiBaseUrl;
+    const configuredApiKey = process.env.MARKIT_MMF_API_KEY || process.env.MARKIT_MODEL_API_KEY || process.env.OPENAI_API_KEY || apiKeyFromConfig(mmfConfig);
+    const configuredModel = envModel || mmfConfig?.modelId || mmfConfig?.model;
+    const route = !configuredBaseUrl || !configuredApiKey || !configuredModel ? loadMmsRoute(configuredModel, mmfConfig) : undefined;
+    const baseUrl = configuredBaseUrl || route?.baseUrl;
+    const apiKey = configuredApiKey || route?.apiKey;
+    const model = configuredModel || route?.model;
     if (!baseUrl || !apiKey || !model) return { enabled: false, provider, reason: 'Missing MARKIT_MMF_BASE_URL, MARKIT_MMF_API_KEY, or MARKIT_MMF_MODEL_ID' };
-    return { enabled: true, provider, baseUrl, apiKey, model, supportsImages: process.env.MARKIT_MODEL_MULTIMODAL !== 'false' };
+    return {
+      enabled: true,
+      provider,
+      baseUrl,
+      apiKey,
+      model,
+      supportsImages: process.env.MARKIT_MODEL_MULTIMODAL === undefined ? mmfConfig?.multimodal ?? route?.supportsImages ?? true : process.env.MARKIT_MODEL_MULTIMODAL !== 'false',
+      configSource: route?.source ?? (mmfConfig ? 'config-file' : 'env')
+    };
   }
   return { enabled: false, provider: 'off', reason: 'AI normalizer is disabled' };
 }
 
 function truthy(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').toLowerCase());
+}
+
+function loadMmfConfig(): MmfConfig | undefined {
+  const explicit = process.env.MARKIT_MMF_CONFIG;
+  const candidates = [
+    explicit,
+    join(process.cwd(), '.markit', 'mmf.config.json'),
+    resolve(process.cwd(), '..', '..', '.markit', 'mmf.config.json')
+  ].filter((path): path is string => Boolean(path));
+  const configPath = candidates.find((path) => existsSync(path));
+  if (!configPath) return undefined;
+  try {
+    return normalizeMmfConfig(JSON.parse(readFileSync(configPath, 'utf8')));
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeMmfConfig(value: unknown): MmfConfig | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as Record<string, unknown>;
+  const config: MmfConfig = {};
+  if (input.provider === 'local-mms-mmf') config.provider = 'local-mms-mmf';
+  for (const [from, to] of [
+    ['baseUrl', 'baseUrl'],
+    ['openaiBaseUrl', 'openaiBaseUrl'],
+    ['apiKey', 'apiKey'],
+    ['apiKeyEnv', 'apiKeyEnv'],
+    ['modelId', 'modelId'],
+    ['model', 'model'],
+    ['routeFile', 'routeFile'],
+    ['capabilitiesFile', 'capabilitiesFile']
+  ] as const) {
+    if (typeof input[from] === 'string' && input[from].trim()) config[to] = input[from].trim();
+  }
+  if (typeof input.multimodal === 'boolean') config.multimodal = input.multimodal;
+  if (Array.isArray(input.preferredModels)) config.preferredModels = input.preferredModels.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim());
+  return config;
+}
+
+function apiKeyFromConfig(config: MmfConfig | undefined): string | undefined {
+  if (!config) return undefined;
+  if (config.apiKey) return config.apiKey;
+  if (config.apiKeyEnv) return process.env[config.apiKeyEnv];
+  return undefined;
+}
+
+function hasLocalMmsRoutes(config: MmfConfig | undefined): boolean {
+  return existsSync(routeFilePath(config));
+}
+
+function routeFilePath(config: MmfConfig | undefined): string {
+  return config?.routeFile || process.env.MARKIT_MMS_ROUTES_PATH || join(homedir(), '.config', 'mms', 'generated', 'model-routes.json');
+}
+
+function capabilitiesFilePath(config: MmfConfig | undefined): string {
+  return config?.capabilitiesFile || process.env.MARKIT_MMS_CAPABILITIES_PATH || join(homedir(), '.config', 'mms', 'generated', 'model-capabilities.approved.json');
+}
+
+function loadMmsRoute(requestedModel: string | undefined, config: MmfConfig | undefined): MmsRouteMatch | undefined {
+  const path = routeFilePath(config);
+  if (!existsSync(path)) return undefined;
+  try {
+    const routes = JSON.parse(readFileSync(path, 'utf8'))?.routes;
+    if (!routes || typeof routes !== 'object') return undefined;
+    const visionModels = loadVisionModelSet(config);
+    const preferred = preferredModels(requestedModel, config);
+    const keys = Object.keys(routes as Record<string, unknown>);
+    const orderedKeys = [...preferred, ...keys].filter((value, index, list) => value && list.indexOf(value) === index);
+    for (const candidate of orderedKeys) {
+      const entry = findRouteEntry(routes as Record<string, unknown>, candidate);
+      if (!entry) continue;
+      const primary = typeof entry.route === 'object' ? (entry.route as Record<string, unknown>).primary : undefined;
+      if (!primary || typeof primary !== 'object') continue;
+      const row = primary as Record<string, unknown>;
+      const model = String(row.model_id || entry.key || candidate);
+      const supportsImages = visionModels.size ? visionModels.has(candidate) || visionModels.has(model) || visionModels.has(entry.key) : true;
+      if (!requestedModel && !supportsImages) continue;
+      const baseUrl = typeof row.openai_base_url === 'string' ? row.openai_base_url : typeof row.base_url === 'string' ? row.base_url : '';
+      const apiKey = typeof row.api_key === 'string' ? row.api_key : '';
+      if (baseUrl && apiKey && model) return { baseUrl, apiKey, model, supportsImages, source: requestedModel ? 'mms-route' : 'mms-auto' };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function preferredModels(requestedModel: string | undefined, config: MmfConfig | undefined): string[] {
+  if (requestedModel) return [requestedModel];
+  const envPreferred = process.env.MARKIT_MMF_PREFERRED_MODELS?.split(',').map((item) => item.trim()).filter(Boolean);
+  return envPreferred?.length ? envPreferred : config?.preferredModels?.length ? config.preferredModels : ['mimo-v2.5', 'qwen3.6-plus', 'qwen3.5-plus', 'MiniMax-M2.7', 'gpt-5.4-mini', 'gpt-5.4'];
+}
+
+function findRouteEntry(routes: Record<string, unknown>, candidate: string): { key: string; route: unknown } | undefined {
+  if (routes[candidate]) return { key: candidate, route: routes[candidate] };
+  return Object.entries(routes).map(([key, route]) => ({ key, route })).find(({ key, route }) => {
+    const primary = route && typeof route === 'object' ? (route as Record<string, unknown>).primary : undefined;
+    return key === candidate || (primary && typeof primary === 'object' && String((primary as Record<string, unknown>).model_id || '') === candidate);
+  });
+}
+
+function loadVisionModelSet(config: MmfConfig | undefined): Set<string> {
+  const path = capabilitiesFilePath(config);
+  if (!existsSync(path)) return new Set();
+  try {
+    const models = JSON.parse(readFileSync(path, 'utf8'))?.models;
+    if (!Array.isArray(models)) return new Set();
+    return new Set(models
+      .filter((model) => model && typeof model === 'object' && (model as Record<string, unknown>).supports_vision === true)
+      .flatMap((model) => [String((model as Record<string, unknown>).alias || ''), String((model as Record<string, unknown>).canonical_model_id || '')])
+      .filter(Boolean));
+  } catch {
+    return new Set();
+  }
 }
 
 function mockNormalize(input: Record<string, unknown>) {
@@ -137,7 +282,7 @@ function mockNormalize(input: Record<string, unknown>) {
 }
 
 async function openAiCompatibleNormalize(input: Record<string, unknown>, status: ProviderStatus) {
-  const response = await fetch(`${status.baseUrl!.replace(/\/$/, '')}/chat/completions`, {
+  const response = await fetch(chatCompletionsEndpoint(status.baseUrl!), {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${status.apiKey}` },
     body: JSON.stringify({
@@ -154,6 +299,11 @@ async function openAiCompatibleNormalize(input: Record<string, unknown>, status:
   } catch {
     throw new MarkitHttpError(502, 'ai_response_invalid', 'Model did not return valid JSON');
   }
+}
+
+function chatCompletionsEndpoint(baseUrl: string): string {
+  const base = baseUrl.replace(/\/$/, '');
+  return /\/v\d+$/i.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
 }
 
 function buildNormalizeMessages(input: Record<string, unknown>, status: ProviderStatus) {

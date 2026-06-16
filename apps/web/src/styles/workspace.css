@@ -283,6 +283,23 @@
 }
 .mk-mode-group button,
 .mk-device-switch button { grid-template-columns: auto; min-width: 48px; }
+.mk-region-tool-group {
+  border-color: rgba(22,119,255,.28);
+  background: linear-gradient(180deg, rgba(22,119,255,.10), #191815);
+}
+.mk-region-tool-group .mk-region-title {
+  min-width: 96px;
+  color: #eaf3ff;
+  border-color: rgba(22,119,255,.22);
+  background: #202b3c;
+}
+.mk-region-tool-group .mk-region-title small {
+  color: #b9d6ff;
+  background: rgba(22,119,255,.18);
+}
+.mk-region-tool-group button:not(.mk-region-title) {
+  min-width: 48px;
+}
 .mk-capture-actions button { grid-template-columns: auto; min-width: 74px; }
 .mk-toolstrip button small { border-radius: 5px; padding: 2px 5px; color: #908980; background: #191815; }
 .mk-toolstrip button.is-active { color: #fff; border-color: var(--mk-blue); background: var(--mk-blue); }

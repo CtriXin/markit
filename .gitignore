@@ -6,6 +6,7 @@ dist/
 coverage/
 
 # Local runtime data
+config/mmf.config.json
 .markit/
 .xmem/
 .agent.local/

@@ -20,7 +20,7 @@ type DraftAsset = { id: string; kind: 'pasted-screenshot' | 'uploaded-screenshot
 type QuickComment = { annotationId: string; captureId: string; rect: Rect; text: string };
 type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; annotationCount?: number; assetCount?: number; exportPath?: string; createdAt?: string; updatedAt?: string };
 type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; assets: BugAsset[] };
-type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; reason?: string };
+type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
 
 type DraftBug = { title: string; actual: string; expected: string; severity: string; status: string; comment: string; bugType: string; requirementUrl: string; designUrl: string };
 
@@ -43,6 +43,9 @@ const statusOptions = [
   { value: 'wontfix', label: '不处理' }
 ];
 const annotationKindLabels: Record<string, string> = { browse: '浏览', pointer: '指针', pin: '标记', rect: '框选', ellipse: '圈选', freehand: '自由画', element: '元素', section: '区块' };
+const primaryTools: Tool[] = ['browse', 'pointer', 'pin'];
+const regionTools: Tool[] = ['rect', 'ellipse', 'freehand'];
+const semanticTools: Tool[] = ['element', 'section'];
 const bugTypeOptions = [
   { value: 'layout', label: '布局错位', expected: '页面布局应与设计一致，元素完整可见且不遮挡。' },
   { value: 'visual', label: '样式不符', expected: '颜色、字号、间距、圆角、阴影等视觉样式应与设计稿一致。' },
@@ -771,7 +774,14 @@ export function App() {
 	                {deviceOrder.map((device) => <button data-testid={`activate-${device}`} key={device} disabled={Boolean(busy)} className={activeDevice === device ? 'is-active' : ''} onClick={() => activateOrCreateDevice(device)}>{deviceLabels[device].short}</button>)}
               </div>
               <div className="mk-toolbar-group mk-tool-group">
-                {(['browse', 'pointer', 'pin', 'rect', 'ellipse', 'freehand', 'element', 'section'] as Tool[]).map((item) => <button data-testid={`tool-${item}`} key={item} className={tool === item ? 'is-active' : ''} onClick={() => setTool(item)}><span>{toolLabels[item]}</span><small>{shortcutForTool(item)}</small></button>)}
+                {primaryTools.map((item) => <button data-testid={`tool-${item}`} key={item} className={tool === item ? 'is-active' : ''} onClick={() => setTool(item)}><span>{toolLabels[item]}</span><small>{shortcutForTool(item)}</small></button>)}
+              </div>
+              <div className="mk-toolbar-group mk-region-tool-group">
+                <button data-testid="tool-region" className={regionTools.includes(tool) ? 'mk-region-title is-active' : 'mk-region-title'} onClick={() => setTool('rect')}><span>区域标注</span><small>{toolLabels[tool] && regionTools.includes(tool) ? toolLabels[tool] : '框选'}</small></button>
+                {regionTools.map((item) => <button data-testid={`tool-${item}`} key={item} className={tool === item ? 'is-active' : ''} onClick={() => setTool(item)}><span>{toolLabels[item]}</span><small>{shortcutForTool(item)}</small></button>)}
+              </div>
+              <div className="mk-toolbar-group mk-semantic-tool-group">
+                {semanticTools.map((item) => <button data-testid={`tool-${item}`} key={item} className={tool === item ? 'is-active' : ''} onClick={() => setTool(item)}><span>{toolLabels[item]}</span><small>{shortcutForTool(item)}</small></button>)}
               </div>
               <div className="mk-toolbar-group mk-capture-actions">
                 <button data-testid="capture-viewport" onClick={() => createCapture('viewport')}>截取视口</button>
@@ -1149,7 +1159,7 @@ function BugDetailPanel({ detail, patchBug, exportBug }: { detail: BugDetail | u
 }
 
 function Settings({ aiStatus }: { aiStatus: AiStatus }) {
-  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}{aiStatus.supportsImages ? '，支持图片输入' : ''}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型；仅在开启 MMF / multimodal provider 并点击整理描述时发送对比截图。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / Z 撤销标注 / 1-4 优先级 / Cmd+S 保存 / Cmd+V 粘贴截图</dd></dl></section>;
+  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}{aiStatus.supportsImages ? '，支持图片输入' : ''}{aiStatus.configSource ? `，来源 ${aiStatus.configSource}` : ''}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型；仅在开启 MMF / multimodal provider 并点击整理描述时发送对比截图。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / Z 撤销标注 / 1-4 优先级 / Cmd+S 保存 / Cmd+V 粘贴截图</dd></dl></section>;
 }
 
 function AnnotationShape({ annotation, selected, index }: { annotation: Annotation; selected: boolean; index: number }) {

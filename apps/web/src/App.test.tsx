@@ -9,6 +9,7 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('把任意真实 URL 变成可点击、可标注、可导出证据的 Bug 工作台');
     expect(source).toContain('默认单端验收');
     expect(source).toContain('区块');
+    expect(source).toContain('区域标注');
     expect(source).toContain('圈选');
     expect(source).toContain('快速保存');
     expect(source).toContain('撤销标注');

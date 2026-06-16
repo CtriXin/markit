@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join, resolve } from 'node:path';
 import { createApp } from '../src/app.js';
@@ -135,9 +135,11 @@ describe('session and capture API', () => {
       baseUrl: process.env.MARKIT_MMF_BASE_URL,
       apiKey: process.env.MARKIT_MMF_API_KEY,
       model: process.env.MARKIT_MMF_MODEL_ID,
-      multimodal: process.env.MARKIT_MODEL_MULTIMODAL
+      multimodal: process.env.MARKIT_MODEL_MULTIMODAL,
+      config: process.env.MARKIT_MMF_CONFIG
     };
     process.env.MARKIT_AI_PROVIDER = 'local-mms-mmf';
+    delete process.env.MARKIT_MMF_CONFIG;
     process.env.MARKIT_MMF_BASE_URL = 'http://127.0.0.1:9999/v1';
     process.env.MARKIT_MMF_API_KEY = 'secret-for-test';
     process.env.MARKIT_MMF_MODEL_ID = 'mmf-vision-test';
@@ -155,6 +157,104 @@ describe('session and capture API', () => {
       restoreEnv('MARKIT_MMF_API_KEY', previous.apiKey);
       restoreEnv('MARKIT_MMF_MODEL_ID', previous.model);
       restoreEnv('MARKIT_MODEL_MULTIMODAL', previous.multimodal);
+      restoreEnv('MARKIT_MMF_CONFIG', previous.config);
+    }
+  });
+
+  it('resolves local MMF from a server config file without exposing endpoint details', async () => {
+    const previous = {
+      provider: process.env.MARKIT_AI_PROVIDER,
+      config: process.env.MARKIT_MMF_CONFIG,
+      configKey: process.env.MARKIT_TEST_MMF_KEY,
+      baseUrl: process.env.MARKIT_MMF_BASE_URL,
+      apiKey: process.env.MARKIT_MMF_API_KEY,
+      model: process.env.MARKIT_MMF_MODEL_ID
+    };
+    const configPath = join(dataDir, 'mmf.config.json');
+    await writeFile(configPath, JSON.stringify({
+      provider: 'local-mms-mmf',
+      baseUrl: 'http://127.0.0.1:9998/v1',
+      apiKeyEnv: 'MARKIT_TEST_MMF_KEY',
+      modelId: 'mimo-v2.5',
+      multimodal: true
+    }));
+    delete process.env.MARKIT_AI_PROVIDER;
+    delete process.env.MARKIT_MMF_BASE_URL;
+    delete process.env.MARKIT_MMF_API_KEY;
+    delete process.env.MARKIT_MMF_MODEL_ID;
+    process.env.MARKIT_MMF_CONFIG = configPath;
+    process.env.MARKIT_TEST_MMF_KEY = 'config-secret';
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/ai/status`);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({ enabled: true, provider: 'local-mms-mmf', model: 'mimo-v2.5', supportsImages: true, configSource: 'config-file' });
+      expect(body.apiKey).toBeUndefined();
+      expect(body.baseUrl).toBeUndefined();
+    } finally {
+      restoreEnv('MARKIT_AI_PROVIDER', previous.provider);
+      restoreEnv('MARKIT_MMF_CONFIG', previous.config);
+      restoreEnv('MARKIT_TEST_MMF_KEY', previous.configKey);
+      restoreEnv('MARKIT_MMF_BASE_URL', previous.baseUrl);
+      restoreEnv('MARKIT_MMF_API_KEY', previous.apiKey);
+      restoreEnv('MARKIT_MMF_MODEL_ID', previous.model);
+    }
+  });
+
+  it('auto-discovers a vision-capable local MMS route when MMF env is omitted', async () => {
+    const previous = {
+      provider: process.env.MARKIT_AI_PROVIDER,
+      config: process.env.MARKIT_MMF_CONFIG,
+      routePath: process.env.MARKIT_MMS_ROUTES_PATH,
+      capabilitiesPath: process.env.MARKIT_MMS_CAPABILITIES_PATH,
+      preferred: process.env.MARKIT_MMF_PREFERRED_MODELS,
+      baseUrl: process.env.MARKIT_MMF_BASE_URL,
+      apiKey: process.env.MARKIT_MMF_API_KEY,
+      model: process.env.MARKIT_MMF_MODEL_ID
+    };
+    const routePath = join(dataDir, 'model-routes.json');
+    const capabilitiesPath = join(dataDir, 'model-capabilities.json');
+    await writeFile(routePath, JSON.stringify({
+      version: 1,
+      routes: {
+        'mimo-v2.5': {
+          primary: {
+            provider_id: 'test-provider',
+            openai_base_url: 'http://127.0.0.1:9997',
+            api_key: 'route-secret',
+            model_id: 'mimo-v2.5'
+          },
+          fallbacks: []
+        }
+      }
+    }));
+    await writeFile(capabilitiesPath, JSON.stringify({
+      models: [{ alias: 'mimo-v2.5', canonical_model_id: 'mimo-v2.5', supports_vision: true }]
+    }));
+    delete process.env.MARKIT_AI_PROVIDER;
+    delete process.env.MARKIT_MMF_CONFIG;
+    delete process.env.MARKIT_MMF_BASE_URL;
+    delete process.env.MARKIT_MMF_API_KEY;
+    delete process.env.MARKIT_MMF_MODEL_ID;
+    process.env.MARKIT_MMS_ROUTES_PATH = routePath;
+    process.env.MARKIT_MMS_CAPABILITIES_PATH = capabilitiesPath;
+    process.env.MARKIT_MMF_PREFERRED_MODELS = 'mimo-v2.5';
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/ai/status`);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({ enabled: true, provider: 'local-mms-mmf', model: 'mimo-v2.5', supportsImages: true, configSource: 'mms-auto' });
+      expect(body.apiKey).toBeUndefined();
+      expect(body.baseUrl).toBeUndefined();
+    } finally {
+      restoreEnv('MARKIT_AI_PROVIDER', previous.provider);
+      restoreEnv('MARKIT_MMF_CONFIG', previous.config);
+      restoreEnv('MARKIT_MMS_ROUTES_PATH', previous.routePath);
+      restoreEnv('MARKIT_MMS_CAPABILITIES_PATH', previous.capabilitiesPath);
+      restoreEnv('MARKIT_MMF_PREFERRED_MODELS', previous.preferred);
+      restoreEnv('MARKIT_MMF_BASE_URL', previous.baseUrl);
+      restoreEnv('MARKIT_MMF_API_KEY', previous.apiKey);
+      restoreEnv('MARKIT_MMF_MODEL_ID', previous.model);
     }
   });
 });
