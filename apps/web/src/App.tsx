@@ -109,6 +109,8 @@ export function App() {
   const imageRef = useRef<HTMLImageElement>(null);
   const lastAnnotationIdRef = useRef<string>('');
   const pendingAnnotationRef = useRef<Promise<void> | undefined>(undefined);
+  const wheelDeltaRef = useRef<Point>({ x: 0, y: 0 });
+  const wheelTimerRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     fetch('/api/health').then((r) => r.json()).then((body) => setHealth({ kind: 'ok', version: body.version })).catch((error) => setHealth({ kind: 'error', message: String(error) }));
@@ -129,6 +131,10 @@ export function App() {
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0 });
   }, [view]);
+
+  useEffect(() => () => {
+    if (wheelTimerRef.current) window.clearTimeout(wheelTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (view !== 'session') return;
@@ -666,9 +672,20 @@ export function App() {
   }
 
   function onCanvasWheel(event: ReactWheelEvent<HTMLElement>) {
-    if (tool !== 'browse' || busy) return;
     event.preventDefault();
-    void runAction('scroll', { delta: { x: event.deltaX, y: event.deltaY } });
+    if (busy || dragStartRef.current || freehandRef.current.length) return;
+    wheelDeltaRef.current = {
+      x: clampWheelDelta(wheelDeltaRef.current.x + event.deltaX),
+      y: clampWheelDelta(wheelDeltaRef.current.y + event.deltaY)
+    };
+    if (wheelTimerRef.current) window.clearTimeout(wheelTimerRef.current);
+    wheelTimerRef.current = window.setTimeout(() => {
+      const delta = wheelDeltaRef.current;
+      wheelDeltaRef.current = { x: 0, y: 0 };
+      wheelTimerRef.current = undefined;
+      if (Math.abs(delta.x) < 1 && Math.abs(delta.y) < 1) return;
+      void runAction('scroll', { delta });
+    }, 120);
   }
 
   function onCanvasKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
@@ -1077,7 +1094,7 @@ function BugPanel(props: {
           ) : null}
         </section>
         <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>整理描述（{props.aiStatus.provider}{props.aiStatus.supportsImages ? '+图片' : ''}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>快速保存</button></div>
-        <small>快捷：1/2/3/4 设 P0/P1/P2/P3，A 快速保存，Z 撤销标注，O 圈选，D 自由画。</small>
+        <small>快捷：1/2/3/4 设 P0/P1/P2/P3，A 快速保存，Z 撤销标注，O 圈选，D 自由画；画布滚轮会滚动真实页面。</small>
         {!props.aiStatus.enabled ? <small>{props.aiStatus.reason}</small> : null}
       </section>
       <section className="mk-panel-section mk-target-card">
@@ -1237,6 +1254,10 @@ function boundsForPath(path: Point[]): Rect {
   const minX = Math.min(...xs);
   const minY = Math.min(...ys);
   return { x: minX, y: minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY };
+}
+
+function clampWheelDelta(value: number): number {
+  return Math.max(-900, Math.min(900, value));
 }
 
 function pickTarget(targets: DomTarget[], point: Point): DomTarget | undefined {

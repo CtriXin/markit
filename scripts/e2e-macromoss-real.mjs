@@ -55,35 +55,39 @@ async function main() {
     result.capabilities.realDomainRender = true;
     result.capabilities.singleDeviceDefault = true;
 
+    await verifyAnnotationModeScroll(page);
+    result.capabilities.annotationModeScroll = true;
+    await screenshot(page, '02-macromoss-annotation-mode-scroll.png');
+
     const clickResult = await clickRealNavigation(page);
     result.capabilities.realClickNavigation = clickResult.afterUrl !== clickResult.beforeUrl;
-    await screenshot(page, '02-macromoss-after-real-click.png');
+    await screenshot(page, '03-macromoss-after-real-click.png');
 
     await verifyFreehand(page);
     result.capabilities.freehandCircle = true;
-    await screenshot(page, '03-macromoss-circle-freehand.png');
+    await screenshot(page, '04-macromoss-circle-freehand.png');
 
     await verifyEllipse(page);
     result.capabilities.ellipseCircle = true;
-    await screenshot(page, '04-macromoss-circle-ellipse.png');
+    await screenshot(page, '05-macromoss-circle-ellipse.png');
 
     await verifyQuickCommentPopover(page);
     result.capabilities.quickCommentPopup = true;
 
     await verifySectionPick(page);
     result.capabilities.sectionPick = true;
-    await screenshot(page, '06-macromoss-section-pick.png');
+    await screenshot(page, '07-macromoss-section-pick.png');
 
     await verifyUndoLastAnnotation(page);
     result.capabilities.undoLastAnnotation = true;
-    await screenshot(page, '07-macromoss-undo.png');
+    await screenshot(page, '08-macromoss-undo.png');
 
     await verifyQuickSave(page);
     result.capabilities.quickSaveWithReferences = true;
     result.capabilities.pasteScreenshotEvidence = true;
     result.capabilities.uploadScreenshotEvidence = true;
     result.capabilities.pasteUploadScreenshotEvidence = true;
-    await screenshot(page, '08-macromoss-quick-save.png');
+    await screenshot(page, '09-macromoss-quick-save.png');
     await page.getByRole('button', { name: '预览' }).click();
     await page.waitForSelector('[data-testid="device-pc"] img');
 
@@ -91,7 +95,7 @@ async function main() {
     await page.waitForSelector('[data-testid="device-mobile"] img');
     await waitIdle(page);
     result.capabilities.optionalDualPreview = true;
-    await screenshot(page, '09-macromoss-dual-optional.png');
+    await screenshot(page, '10-macromoss-dual-optional.png');
 
     result.finishedAt = new Date().toISOString();
     await writeResult();
@@ -130,6 +134,25 @@ async function clickRealNavigation(page) {
     if (record.changed) return record;
   }
   throw new Error(`No real link click changed URL. Attempts: ${JSON.stringify(result.clickAttempts, null, 2)}`);
+}
+
+async function verifyAnnotationModeScroll(page) {
+  await setTool(page, 'rect');
+  const beforeCapture = await currentCaptureId(page);
+  const beforeScroll = await currentScroll(page);
+  const box = await page.locator('[data-testid="canvas-layer"] img').boundingBox();
+  if (!box) throw new Error('Canvas image has no box for annotation scroll test');
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+  await page.mouse.wheel(0, 620);
+  await waitForCaptureChange(page, beforeCapture);
+  await waitIdle(page);
+  const afterScroll = await currentScroll(page);
+  if (afterScroll.y <= beforeScroll.y) throw new Error(`Annotation mode wheel did not scroll target page: before=${JSON.stringify(beforeScroll)} after=${JSON.stringify(afterScroll)}`);
+  const resetCapture = await currentCaptureId(page);
+  await page.getByTestId('session-address').fill(targetUrl);
+  await page.getByTestId('navigate-active').click();
+  await waitForCaptureChange(page, resetCapture);
+  await waitIdle(page);
 }
 
 async function verifyFreehand(page) {
@@ -181,7 +204,7 @@ async function verifySectionPick(page) {
 async function verifyQuickCommentPopover(page) {
   await page.waitForSelector('[data-testid="quick-comment-popover"]');
   await page.getByTestId('quick-comment-input').fill('Popup 快速评论验证：标注后不用去右侧表单也能输入说明');
-  await screenshot(page, '05-macromoss-quick-comment-popup.png');
+  await screenshot(page, '06-macromoss-quick-comment-popup.png');
   await page.getByRole('button', { name: '保存评论' }).click();
   await page.waitForFunction(() => /已保存标注评论/.test(document.body.innerText));
   const lastNote = await page.locator('.mk-ann-list article').last().locator('input[aria-label^="note-"]').inputValue();
@@ -305,6 +328,38 @@ async function currentCaptureId(page) {
   const match = src?.match(/\/api\/captures\/([^/]+)\/image/);
   if (!match) throw new Error(`Cannot parse capture id from ${src}`);
   return match[1];
+}
+
+async function currentScroll(page) {
+  const captureId = await currentCaptureId(page);
+  const response = await fetch(`${apiUrl}/api/sessions`);
+  if (!response.ok) throw new Error(`sessions failed: ${response.status}`);
+  const imageResponse = await fetch(`${apiUrl}/api/captures/${captureId}/dom-targets`);
+  if (!imageResponse.ok) throw new Error(`dom target refresh failed: ${imageResponse.status}`);
+  const captureList = await page.evaluate(async () => {
+    const src = document.querySelector('[data-testid="canvas-layer"] img')?.getAttribute('src') || '';
+    const match = src.match(/\/api\/captures\/([^/]+)\/image/);
+    const id = match?.[1] || '';
+    const text = document.querySelector('.mk-meta-list dl')?.textContent || '';
+    return { id, text };
+  });
+  const captures = await fetchCapturesForActiveSession(page);
+  const capture = captures.find((item) => item.id === captureId);
+  if (!capture) throw new Error(`Current capture not found for scroll read: ${JSON.stringify(captureList)}`);
+  return capture.scroll || { x: 0, y: 0 };
+}
+
+async function fetchCapturesForActiveSession(page) {
+  const activeText = await page.locator('.mk-capture-thread button').first().textContent();
+  const sessionsResponse = await fetch(`${apiUrl}/api/sessions`);
+  if (!sessionsResponse.ok) throw new Error(`sessions failed: ${sessionsResponse.status}`);
+  const sessions = (await sessionsResponse.json()).sessions || [];
+  const currentAddress = await addressValue(page);
+  const session = sessions.slice().reverse().find((item) => item.currentUrl === currentAddress || item.sourceUrl === currentAddress) || sessions.at(-1);
+  if (!session) throw new Error(`No session found while reading scroll: ${activeText}`);
+  const response = await fetch(`${apiUrl}/api/sessions/${session.id}/captures`);
+  if (!response.ok) throw new Error(`captures failed: ${response.status}`);
+  return (await response.json()).captures || [];
 }
 
 async function screenPoint(page, rect, fx, fy) {
