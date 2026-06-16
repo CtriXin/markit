@@ -23,6 +23,7 @@ type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; ass
 type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
 
 type DraftBug = { title: string; actual: string; expected: string; severity: string; status: string; comment: string; bugType: string; requirementUrl: string; designUrl: string };
+type ActionOptions = { quiet?: boolean; checkStale?: boolean };
 
 const viewportOptions: Array<Viewport & { key: string }> = [
   { key: 'desktop-1440', name: '桌面端 1440x900', width: 1440, height: 900, deviceScaleFactor: 1 },
@@ -111,6 +112,7 @@ export function App() {
   const pendingAnnotationRef = useRef<Promise<void> | undefined>(undefined);
   const wheelDeltaRef = useRef<Point>({ x: 0, y: 0 });
   const wheelTimerRef = useRef<number | undefined>(undefined);
+  const scrollInFlightRef = useRef(false);
 
   useEffect(() => {
     fetch('/api/health').then((r) => r.json()).then((body) => setHealth({ kind: 'ok', version: body.version })).catch((error) => setHealth({ kind: 'error', message: String(error) }));
@@ -304,14 +306,19 @@ export function App() {
     cancelDrawing();
   }
 
-  async function runAction(type: string, payload: Record<string, unknown> = {}) {
+  async function runAction(type: string, payload: Record<string, unknown> = {}, options: ActionOptions = {}) {
     if (!session) return;
     const device = activeDevice;
     const sessionId = session.id;
-    setBusy(`正在执行浏览动作：${type}`);
-    setMessage('');
+    if (!options.quiet) {
+      setBusy(`正在执行浏览动作：${type}`);
+      setMessage('');
+    }
     try {
-      const body = await api<{ session: Session; capture?: Capture }>(`/api/sessions/${session.id}/actions`, { method: 'POST', body: JSON.stringify({ type, baseSessionVersion: session.sessionVersion, ...payload }) });
+      const body = await api<{ session: Session; capture?: Capture }>(`/api/sessions/${session.id}/actions`, {
+        method: 'POST',
+        body: JSON.stringify({ type, ...(options.checkStale === false ? {} : { baseSessionVersion: session.sessionVersion }), ...payload })
+      });
       setSession(body.session);
       if (body.capture) setCapture(body.capture);
       const captureBody = await api<{ captures: Capture[] }>(`/api/sessions/${body.session.id}/captures`);
@@ -324,7 +331,7 @@ export function App() {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : `动作失败：${type}`);
     } finally {
-      setBusy('');
+      if (!options.quiet) setBusy('');
     }
   }
 
@@ -687,7 +694,7 @@ export function App() {
 
   function onCanvasWheel(event: ReactWheelEvent<HTMLElement>) {
     event.preventDefault();
-    if (busy || dragStartRef.current || freehandRef.current.length) return;
+    if ((busy && !scrollInFlightRef.current) || dragStartRef.current || freehandRef.current.length) return;
     wheelDeltaRef.current = {
       x: clampWheelDelta(wheelDeltaRef.current.x + event.deltaX),
       y: clampWheelDelta(wheelDeltaRef.current.y + event.deltaY)
@@ -698,8 +705,29 @@ export function App() {
       wheelDeltaRef.current = { x: 0, y: 0 };
       wheelTimerRef.current = undefined;
       if (Math.abs(delta.x) < 1 && Math.abs(delta.y) < 1) return;
-      void runAction('scroll', { delta });
-    }, 120);
+      void flushWheelScroll(delta);
+    }, 260);
+  }
+
+  async function flushWheelScroll(delta: Point) {
+    if (scrollInFlightRef.current) {
+      wheelDeltaRef.current = {
+        x: clampWheelDelta(wheelDeltaRef.current.x + delta.x),
+        y: clampWheelDelta(wheelDeltaRef.current.y + delta.y)
+      };
+      return;
+    }
+    scrollInFlightRef.current = true;
+    try {
+      await runAction('scroll', { delta }, { quiet: true, checkStale: false });
+    } finally {
+      scrollInFlightRef.current = false;
+      const pending = wheelDeltaRef.current;
+      if (Math.abs(pending.x) >= 1 || Math.abs(pending.y) >= 1) {
+        wheelDeltaRef.current = { x: 0, y: 0 };
+        void flushWheelScroll(pending);
+      }
+    }
   }
 
   function onCanvasKeyDown(event: ReactKeyboardEvent<HTMLElement>) {

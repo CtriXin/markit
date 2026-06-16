@@ -133,8 +133,12 @@ export function sessionsRouter(context: ServerContext): Router {
     } else {
       throw new MarkitHttpError(400, 'invalid_action', `Unsupported action: ${type}`);
     }
-    await page.waitForLoadState('domcontentloaded', { timeout: 3_000 }).catch(() => undefined);
-    await page.waitForLoadState('networkidle', { timeout: 1_500 }).catch(() => page.waitForTimeout(180));
+    if (type === 'scroll') {
+      await page.waitForTimeout(90);
+    } else {
+      await page.waitForLoadState('domcontentloaded', { timeout: 3_000 }).catch(() => undefined);
+      await page.waitForLoadState('networkidle', { timeout: 1_500 }).catch(() => page.waitForTimeout(180));
+    }
     const nextVersion = Number(session.session_version) + 1;
     context.database.db.run('UPDATE sessions SET current_url = ?, title = ?, session_version = ?, updated_at = ? WHERE id = ?', [page.url(), await page.title(), nextVersion, nowIso(), sessionId]);
     const capture = req.body?.recapture === false ? undefined : await createCapture(context, sessionId, 'viewport');
