@@ -8,6 +8,7 @@ export type RuntimePage = {
 export class BrowserRuntime {
   private browser: Browser | undefined;
   private pages = new Map<string, RuntimePage>();
+  private inputSessions = new Map<string, CDPSession>();
 
   async getBrowser(): Promise<Browser> {
     this.browser ??= await chromium.launch();
@@ -37,10 +38,39 @@ export class BrowserRuntime {
     return runtime.context.newCDPSession(runtime.page);
   }
 
+  async dispatchMouseWheel(sessionId: string, event: { x: number; y: number; deltaX: number; deltaY: number }): Promise<boolean> {
+    const runtime = this.pages.get(sessionId);
+    if (!runtime) return false;
+    let client = this.inputSessions.get(sessionId);
+    if (!client) {
+      client = await runtime.context.newCDPSession(runtime.page);
+      this.inputSessions.set(sessionId, client);
+    }
+    try {
+      await client.send('Input.dispatchMouseEvent', {
+        type: 'mouseWheel',
+        x: event.x,
+        y: event.y,
+        deltaX: event.deltaX,
+        deltaY: event.deltaY,
+        modifiers: 0,
+        pointerType: 'mouse'
+      });
+      return true;
+    } catch (error) {
+      this.inputSessions.delete(sessionId);
+      await client.detach().catch(() => undefined);
+      throw error;
+    }
+  }
+
   async closeSession(sessionId: string): Promise<void> {
     const existing = this.pages.get(sessionId);
     if (!existing) return;
     this.pages.delete(sessionId);
+    const inputSession = this.inputSessions.get(sessionId);
+    this.inputSessions.delete(sessionId);
+    await inputSession?.detach().catch(() => undefined);
     await existing.context.close().catch(() => undefined);
   }
 

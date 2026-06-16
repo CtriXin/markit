@@ -330,16 +330,30 @@ async function screenPoint(page, rect, fx, fy) {
 async function currentCaptureId(page) {
   const src = await page.locator('[data-testid="canvas-layer"] img').getAttribute('src');
   const match = src?.match(/\/api\/captures\/([^/]+)\/image/);
-  if (!match) throw new Error(`Cannot parse capture id from ${src}`);
-  return match[1];
+  if (match) return match[1];
+  const captures = await fetchCapturesForActiveSession(page);
+  const latest = captures.at(-1);
+  if (!latest) throw new Error(`Cannot parse capture id from ${src}`);
+  return latest.id;
+}
+
+async function fetchCapturesForActiveSession(page) {
+  const currentAddress = await page.getByTestId('session-address').inputValue().catch(() => '');
+  const sessions = (await jsonFetch(`${apiUrl}/api/sessions`)).sessions || [];
+  const session = sessions.slice().reverse().find((item) => item.currentUrl === currentAddress || item.sourceUrl === currentAddress) || sessions.at(-1);
+  if (!session) throw new Error(`No active session found for ${currentAddress}`);
+  const body = await jsonFetch(`${apiUrl}/api/sessions/${session.id}/captures`);
+  return body.captures || [];
 }
 
 async function waitForCaptureChange(page, previousId) {
-  await page.waitForFunction((oldId) => {
-    const src = document.querySelector('[data-testid="canvas-layer"] img')?.getAttribute('src') || '';
-    const match = src.match(/\/api\/captures\/([^/]+)\/image/);
-    return match && match[1] !== oldId;
-  }, previousId);
+  const started = Date.now();
+  while (Date.now() - started < 20_000) {
+    const currentId = await currentCaptureId(page).catch(() => '');
+    if (currentId && currentId !== previousId) return;
+    await new Promise((resolve) => setTimeout(resolve, 160));
+  }
+  throw new Error(`Timed out waiting for capture change from ${previousId}`);
 }
 
 async function annotationCount(page) {

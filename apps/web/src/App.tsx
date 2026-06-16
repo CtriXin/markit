@@ -24,7 +24,6 @@ type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; 
 
 type DraftBug = { title: string; actual: string; expected: string; severity: string; status: string; comment: string; bugType: string; requirementUrl: string; designUrl: string };
 type ActionOptions = { quiet?: boolean; checkStale?: boolean };
-type LiveFrame = { sessionId: string; dataUrl: string; timestamp: number };
 
 const viewportOptions: Array<Viewport & { key: string }> = [
   { key: 'desktop-1440', name: '桌面端 1440x900', width: 1440, height: 900, deviceScaleFactor: 1 },
@@ -93,7 +92,6 @@ export function App() {
   const [message, setMessage] = useState('');
   const [actionText, setActionText] = useState('');
   const [addressText, setAddressText] = useState('');
-  const [liveFrame, setLiveFrame] = useState<LiveFrame>();
   const [lastPoint, setLastPoint] = useState<Point>();
   const [dragStart, setDragStart] = useState<Point>();
   const [rectPreview, setRectPreview] = useState<Rect>();
@@ -115,6 +113,9 @@ export function App() {
   const wheelDeltaRef = useRef<Point>({ x: 0, y: 0 });
   const wheelPointRef = useRef<Point | undefined>(undefined);
   const wheelFrameRef = useRef<number | undefined>(undefined);
+  const wheelTimerRef = useRef<number | undefined>(undefined);
+  const wheelInFlightRef = useRef(false);
+  const wheelLastSentRef = useRef(0);
 
   useEffect(() => {
     fetch('/api/health').then((r) => r.json()).then((body) => setHealth({ kind: 'ok', version: body.version })).catch((error) => setHealth({ kind: 'error', message: String(error) }));
@@ -134,25 +135,12 @@ export function App() {
   }, [session?.currentUrl, capture?.finalUrl]);
 
   useEffect(() => {
-    if (view !== 'session' || tool !== 'browse' || !session?.id) {
-      setLiveFrame(undefined);
-      return;
-    }
-    const source = new EventSource(`/api/sessions/${session.id}/screencast`);
-    source.addEventListener('frame', (event) => {
-      const payload = JSON.parse((event as MessageEvent).data) as { dataUrl: string; timestamp: number };
-      setLiveFrame({ sessionId: session.id, dataUrl: payload.dataUrl, timestamp: payload.timestamp });
-    });
-    source.onerror = () => setLiveFrame(undefined);
-    return () => source.close();
-  }, [view, tool, session?.id]);
-
-  useEffect(() => {
     window.scrollTo({ top: 0, left: 0 });
   }, [view]);
 
   useEffect(() => () => {
     if (wheelFrameRef.current) window.cancelAnimationFrame(wheelFrameRef.current);
+    if (wheelTimerRef.current) window.clearTimeout(wheelTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -209,8 +197,11 @@ export function App() {
   function setTool(name: Tool) {
     const shouldLockCapture = name !== 'browse' && tool === 'browse' && view === 'session';
     cancelDrawing();
+    if (shouldLockCapture) {
+      void createCapture('viewport').then(() => setToolState(name));
+      return;
+    }
     setToolState(name);
-    if (shouldLockCapture) void createCapture('viewport');
   }
 
   function cancelDrawing() {
@@ -722,21 +713,39 @@ export function App() {
       x: clampWheelDelta(wheelDeltaRef.current.x + event.deltaX),
       y: clampWheelDelta(wheelDeltaRef.current.y + event.deltaY)
     };
-    if (!wheelFrameRef.current) wheelFrameRef.current = window.requestAnimationFrame(flushWheelScroll);
+    scheduleWheelScroll();
+  }
+
+  function scheduleWheelScroll() {
+    if (wheelFrameRef.current || wheelTimerRef.current) return;
+    const elapsed = performance.now() - wheelLastSentRef.current;
+    const wait = Math.max(0, 28 - elapsed);
+    wheelTimerRef.current = window.setTimeout(() => {
+      wheelTimerRef.current = undefined;
+      wheelFrameRef.current = window.requestAnimationFrame(flushWheelScroll);
+    }, wait);
   }
 
   function flushWheelScroll() {
     wheelFrameRef.current = undefined;
+    if (wheelInFlightRef.current) return;
     if (!session) return;
     const delta = wheelDeltaRef.current;
     const point = wheelPointRef.current;
     wheelDeltaRef.current = { x: 0, y: 0 };
     if (Math.abs(delta.x) < 1 && Math.abs(delta.y) < 1) return;
+    wheelInFlightRef.current = true;
+    wheelLastSentRef.current = performance.now();
     void fetch(`/api/sessions/${session.id}/actions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type: 'scroll', delta, point, recapture: false })
-    }).catch((error) => setMessage(error instanceof Error ? error.message : '滚动失败'));
+    })
+      .catch((error) => setMessage(error instanceof Error ? error.message : '滚动失败'))
+      .finally(() => {
+        wheelInFlightRef.current = false;
+        if (Math.abs(wheelDeltaRef.current.x) >= 1 || Math.abs(wheelDeltaRef.current.y) >= 1) scheduleWheelScroll();
+      });
   }
 
   function onCanvasKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
@@ -888,7 +897,7 @@ export function App() {
                     dragStart={dragStart}
                     rectPreview={rectPreview}
                     freehand={freehand}
-                    liveFrame={liveFrame?.sessionId === deviceSlots[device]?.session.id ? liveFrame : undefined}
+                    sessionId={deviceSlots[device]?.session.id}
                     quickComment={quickComment?.captureId === deviceSlots[device]?.capture?.id ? quickComment : undefined}
                     setQuickComment={setQuickComment}
                     onCloseQuickComment={closeQuickComment}
@@ -932,6 +941,7 @@ function DeviceFrame(props: {
   zoomPercent: number;
   imageRef: RefObject<HTMLImageElement | null>;
   tool: Tool;
+  sessionId: string | undefined;
   domTargets: DomTarget[];
   activeTarget: DomTarget | undefined;
   annotations: Annotation[];
@@ -939,7 +949,6 @@ function DeviceFrame(props: {
   dragStart: Point | undefined;
   rectPreview: Rect | undefined;
   freehand: Point[];
-  liveFrame: LiveFrame | undefined;
   quickComment: QuickComment | undefined;
   setQuickComment: Dispatch<SetStateAction<QuickComment | undefined>>;
   onCloseQuickComment: () => void;
@@ -953,7 +962,7 @@ function DeviceFrame(props: {
 }) {
   const capture = props.slot?.capture;
   const label = deviceLabels[props.device];
-  const imageSrc = props.active && props.tool === 'browse' && props.liveFrame ? props.liveFrame.dataUrl : capture ? `/api/captures/${capture.id}/image` : '';
+  const imageSrc = capture ? `/api/captures/${capture.id}/image` : '';
   const layerStyle = props.zoomMode === 'manual' && capture
     ? { width: `${Math.max(120, Math.round(capture.imageSize.width * (props.zoomPercent / 100)))}px` }
     : undefined;
@@ -977,7 +986,11 @@ function DeviceFrame(props: {
             onWheel={props.active ? props.onWheel : undefined}
             onKeyDown={props.active ? props.onKeyDown : undefined}
           >
-            <img ref={props.active ? props.imageRef : undefined} draggable={false} src={imageSrc} alt={`${label.title}截图`} />
+            {props.active && props.tool === 'browse' && props.sessionId ? (
+              <LiveScreencastImage sessionId={props.sessionId} fallbackSrc={imageSrc} imageRef={props.imageRef} alt={`${label.title}实时画面`} />
+            ) : (
+              <img ref={props.active ? props.imageRef : undefined} draggable={false} src={imageSrc} alt={`${label.title}截图`} />
+            )}
             {props.active ? (
               <svg className="mk-overlay" viewBox={`0 0 ${capture.imageSize.width} ${capture.imageSize.height}`}>
                 {props.domTargets.map((target) => props.tool === 'element' ? <rect key={target.id} className="mk-target-rect" x={target.captureRect.x} y={target.captureRect.y} width={target.captureRect.width} height={target.captureRect.height} /> : null)}
@@ -1009,6 +1022,36 @@ function DeviceFrame(props: {
       </div>
     </article>
   );
+}
+
+function LiveScreencastImage(props: { sessionId: string; fallbackSrc: string; imageRef: RefObject<HTMLImageElement | null>; alt: string }) {
+  const latestFrameRef = useRef('');
+  const rafRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    let closed = false;
+    latestFrameRef.current = '';
+    const source = new EventSource(`/api/sessions/${props.sessionId}/screencast`);
+    const paintFrame = () => {
+      rafRef.current = undefined;
+      if (closed || !latestFrameRef.current || !props.imageRef.current) return;
+      props.imageRef.current.src = latestFrameRef.current;
+      props.imageRef.current.dataset.liveFrameAt = String(Date.now());
+    };
+    const onFrame = (event: Event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as { dataUrl: string };
+      latestFrameRef.current = payload.dataUrl;
+      if (!rafRef.current) rafRef.current = window.requestAnimationFrame(paintFrame);
+    };
+    source.addEventListener('frame', onFrame);
+    return () => {
+      closed = true;
+      source.close();
+      if (rafRef.current) window.cancelAnimationFrame(rafRef.current);
+    };
+  }, [props.sessionId, props.imageRef]);
+
+  return <img ref={props.imageRef} draggable={false} src={props.fallbackSrc} alt={props.alt} />;
 }
 
 function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width: number; height: number }; onChange: (text: string) => void; onClose: () => void; onSave: () => void | Promise<void>; onSaveBug: () => void | Promise<void> }) {

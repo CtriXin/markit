@@ -105,6 +105,20 @@ export function sessionsRouter(context: ServerContext): Router {
       return;
     }
     const type = String(req.body?.type ?? '');
+    if (type === 'scroll' && req.body?.recapture === false) {
+      const point = req.body?.point;
+      const deltaX = Number(req.body?.delta?.x ?? 0);
+      const deltaY = Number(req.body?.delta?.y ?? 0);
+      const x = Number(point?.x ?? 0);
+      const y = Number(point?.y ?? 0);
+      const dispatched = await context.runtime.dispatchMouseWheel(sessionId, { x, y, deltaX, deltaY }).catch(() => false);
+      if (!dispatched) {
+        if (point) await page.mouse.move(x, y);
+        await page.mouse.wheel(deltaX, deltaY);
+      }
+      res.json({ staleBase: false, session: mapSession(context.repos.sessions.get(sessionId)!), capture: undefined });
+      return;
+    }
     if (type === 'click') {
       await page.mouse.click(Number(req.body?.point?.x ?? 0), Number(req.body?.point?.y ?? 0));
     } else if (type === 'scroll') {
@@ -133,10 +147,6 @@ export function sessionsRouter(context: ServerContext): Router {
       await page.goForward({ waitUntil: 'networkidle' });
     } else {
       throw new MarkitHttpError(400, 'invalid_action', `Unsupported action: ${type}`);
-    }
-    if (type === 'scroll' && req.body?.recapture === false) {
-      res.json({ staleBase: false, session: mapSession(context.repos.sessions.get(sessionId)!), capture: undefined });
-      return;
     }
     if (type === 'scroll') {
       await page.waitForTimeout(90);

@@ -339,6 +339,7 @@
   position: relative;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   margin: 0;
   border-radius: 0;
   padding: 14px;
@@ -351,12 +352,14 @@
   gap: 14px;
   min-width: 0;
   min-height: 100%;
+  align-items: start;
 }
 .mk-device-board.is-single { grid-template-columns: minmax(300px, 1fr); }
 .mk-device-board.is-dual { grid-template-columns: minmax(300px, 1.55fr) minmax(210px, .75fr); }
 .mk-device-frame {
   min-width: 0;
   min-height: 0;
+  align-self: start;
   display: grid;
   grid-template-rows: 39px minmax(0, 1fr);
   overflow: hidden;
@@ -409,6 +412,10 @@
 }
 .mk-device-frame.is-active .mk-device-shell { cursor: crosshair; }
 .mk-device-frame.is-active.is-browse-tool .mk-device-shell { cursor: default; }
+.mk-device-board.is-fit .mk-device-frame.is-browse-tool .mk-device-shell {
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
 .mk-image-layer {
   position: relative;
   display: inline-block;
@@ -417,10 +424,11 @@
   background: #fff;
   box-shadow: 0 0 0 1px rgba(22,119,255,.85);
   outline: none;
+  contain: paint;
 }
 .mk-image-layer:focus-visible { box-shadow: 0 0 0 1px rgba(22,119,255,.95), 0 0 0 4px rgba(22,119,255,.18); }
 .mk-device-frame.is-annotation-tool .mk-image-layer { box-shadow: 0 0 0 1px rgba(212,107,8,.95), 0 0 0 5px rgba(212,107,8,.10); }
-.mk-image-layer img { display: block; width: 100%; height: auto; user-select: none; pointer-events: none; }
+.mk-image-layer img { display: block; width: 100%; height: auto; user-select: none; pointer-events: none; transform: translateZ(0); }
 .mk-device-board.is-fit .mk-image-layer { width: auto; max-width: 100%; }
 .mk-device-board.is-fit .mk-image-layer img {
   width: auto;

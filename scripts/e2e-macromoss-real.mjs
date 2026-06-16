@@ -470,11 +470,13 @@ async function screenPoint(page, rect, fx, fy) {
 }
 
 async function waitForCaptureChange(page, previousId) {
-  await page.waitForFunction((oldId) => {
-    const src = document.querySelector('[data-testid="canvas-layer"] img')?.getAttribute('src') || '';
-    const match = src.match(/\/api\/captures\/([^/]+)\/image/);
-    return match && match[1] !== oldId;
-  }, previousId);
+  const started = Date.now();
+  while (Date.now() - started < 35_000) {
+    const currentId = await latestCaptureId(page).catch(() => '');
+    if (currentId && currentId !== previousId) return;
+    await page.waitForTimeout(160);
+  }
+  throw new Error(`Timed out waiting for capture change from ${previousId}`);
 }
 
 async function annotationCount(page) {
