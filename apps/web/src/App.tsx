@@ -198,7 +198,9 @@ export function App() {
     const shouldLockCapture = name !== 'browse' && tool === 'browse' && view === 'session';
     cancelDrawing();
     if (shouldLockCapture) {
-      void createCapture('viewport').then(() => setToolState(name));
+      void createCapture('viewport').then((locked) => {
+        if (locked) setToolState(name);
+      });
       return;
     }
     setToolState(name);
@@ -345,8 +347,8 @@ export function App() {
     }
   }
 
-  async function createCapture(mode: 'viewport' | 'fullPage') {
-    if (!session) return;
+  async function createCapture(mode: 'viewport' | 'fullPage'): Promise<boolean> {
+    if (!session) return false;
     const device = activeDevice;
     const sessionId = session.id;
     setBusy(`正在生成${captureModeLabel(mode)}`);
@@ -361,8 +363,10 @@ export function App() {
         if (!slot || slot.session.id !== sessionId) return current;
         return { ...current, [device]: { ...slot, capture: body.capture, captures: captureBody.captures } };
       });
+      return true;
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '截图失败');
+      return false;
     } finally {
       setBusy('');
     }
