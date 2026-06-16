@@ -108,6 +108,7 @@ export function sessionsRouter(context: ServerContext): Router {
     if (type === 'click') {
       await page.mouse.click(Number(req.body?.point?.x ?? 0), Number(req.body?.point?.y ?? 0));
     } else if (type === 'scroll') {
+      if (req.body?.point) await page.mouse.move(Number(req.body.point.x ?? 0), Number(req.body.point.y ?? 0));
       await page.mouse.wheel(Number(req.body?.delta?.x ?? 0), Number(req.body?.delta?.y ?? 0));
     } else if (type === 'type') {
       const text = String(req.body?.text ?? '');

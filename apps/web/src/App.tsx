@@ -113,8 +113,8 @@ export function App() {
   const lastAnnotationIdRef = useRef<string>('');
   const pendingAnnotationRef = useRef<Promise<void> | undefined>(undefined);
   const wheelDeltaRef = useRef<Point>({ x: 0, y: 0 });
-  const wheelTimerRef = useRef<number | undefined>(undefined);
-  const scrollInFlightRef = useRef(false);
+  const wheelPointRef = useRef<Point | undefined>(undefined);
+  const wheelFrameRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     fetch('/api/health').then((r) => r.json()).then((body) => setHealth({ kind: 'ok', version: body.version })).catch((error) => setHealth({ kind: 'error', message: String(error) }));
@@ -152,7 +152,7 @@ export function App() {
   }, [view]);
 
   useEffect(() => () => {
-    if (wheelTimerRef.current) window.clearTimeout(wheelTimerRef.current);
+    if (wheelFrameRef.current) window.cancelAnimationFrame(wheelFrameRef.current);
   }, []);
 
   useEffect(() => {
@@ -590,7 +590,7 @@ export function App() {
     }
   }
 
-  function capturePoint(event: PointerEvent<HTMLElement>): Point {
+  function capturePoint(event: { clientX: number; clientY: number }): Point {
     const img = imageRef.current;
     if (!img) return { x: 0, y: 0 };
     const rect = img.getBoundingClientRect();
@@ -714,40 +714,29 @@ export function App() {
   function onCanvasWheel(event: ReactWheelEvent<HTMLElement>) {
     if (tool !== 'browse') return;
     event.preventDefault();
-    if ((busy && !scrollInFlightRef.current) || dragStartRef.current || freehandRef.current.length) return;
+    if (busy || dragStartRef.current || freehandRef.current.length) return;
+    const point = capturePoint(event);
+    setLastPoint(point);
+    wheelPointRef.current = point;
     wheelDeltaRef.current = {
       x: clampWheelDelta(wheelDeltaRef.current.x + event.deltaX),
       y: clampWheelDelta(wheelDeltaRef.current.y + event.deltaY)
     };
-    if (wheelTimerRef.current) window.clearTimeout(wheelTimerRef.current);
-    wheelTimerRef.current = window.setTimeout(() => {
-      const delta = wheelDeltaRef.current;
-      wheelDeltaRef.current = { x: 0, y: 0 };
-      wheelTimerRef.current = undefined;
-      if (Math.abs(delta.x) < 1 && Math.abs(delta.y) < 1) return;
-      void flushWheelScroll(delta);
-    }, 24);
+    if (!wheelFrameRef.current) wheelFrameRef.current = window.requestAnimationFrame(flushWheelScroll);
   }
 
-  async function flushWheelScroll(delta: Point) {
-    if (scrollInFlightRef.current) {
-      wheelDeltaRef.current = {
-        x: clampWheelDelta(wheelDeltaRef.current.x + delta.x),
-        y: clampWheelDelta(wheelDeltaRef.current.y + delta.y)
-      };
-      return;
-    }
-    scrollInFlightRef.current = true;
-    try {
-      await runAction('scroll', { delta, recapture: false }, { quiet: true, checkStale: false });
-    } finally {
-      scrollInFlightRef.current = false;
-      const pending = wheelDeltaRef.current;
-      if (Math.abs(pending.x) >= 1 || Math.abs(pending.y) >= 1) {
-        wheelDeltaRef.current = { x: 0, y: 0 };
-        void flushWheelScroll(pending);
-      }
-    }
+  function flushWheelScroll() {
+    wheelFrameRef.current = undefined;
+    if (!session) return;
+    const delta = wheelDeltaRef.current;
+    const point = wheelPointRef.current;
+    wheelDeltaRef.current = { x: 0, y: 0 };
+    if (Math.abs(delta.x) < 1 && Math.abs(delta.y) < 1) return;
+    void fetch(`/api/sessions/${session.id}/actions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'scroll', delta, point, recapture: false })
+    }).catch((error) => setMessage(error instanceof Error ? error.message : '滚动失败'));
   }
 
   function onCanvasKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
