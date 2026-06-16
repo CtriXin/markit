@@ -726,7 +726,7 @@ export function App() {
       wheelTimerRef.current = undefined;
       if (Math.abs(delta.x) < 1 && Math.abs(delta.y) < 1) return;
       void flushWheelScroll(delta);
-    }, 260);
+    }, 24);
   }
 
   async function flushWheelScroll(delta: Point) {

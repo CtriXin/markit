@@ -133,6 +133,10 @@ export function sessionsRouter(context: ServerContext): Router {
     } else {
       throw new MarkitHttpError(400, 'invalid_action', `Unsupported action: ${type}`);
     }
+    if (type === 'scroll' && req.body?.recapture === false) {
+      res.json({ staleBase: false, session: mapSession(context.repos.sessions.get(sessionId)!), capture: undefined });
+      return;
+    }
     if (type === 'scroll') {
       await page.waitForTimeout(90);
     } else {
