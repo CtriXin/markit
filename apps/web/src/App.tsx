@@ -225,6 +225,7 @@ export function App() {
       setDraft(emptyDraft);
       setDraftAssets([]);
       setQuickComment(undefined);
+      setTool('browse');
       setView('session');
       await Promise.all([refreshSessions(), refreshBugs()]);
     } catch (error) {
@@ -249,6 +250,7 @@ export function App() {
       setZoomMode('fit');
       setDraftAssets([]);
       setQuickComment(undefined);
+      setTool('browse');
       setView('session');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '打开已保存会话失败');
@@ -376,6 +378,8 @@ export function App() {
         setCapture(activeSlot.capture);
         setCaptures(activeSlot.captures);
       }
+      setQuickComment(undefined);
+      setTool('browse');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '开启双端失败');
     } finally {
@@ -410,6 +414,8 @@ export function App() {
         setCapture(activeResult.capture);
         setCaptures(activeResult.captures);
       }
+      setQuickComment(undefined);
+      setTool('browse');
       await Promise.all([refreshSessions(), refreshBugs()]);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '打开地址失败');
@@ -573,6 +579,7 @@ export function App() {
     if (!slot) return;
     cancelDrawing();
     setQuickComment(undefined);
+    setTool('browse');
     setActiveDevice(device);
     setSession(slot.session);
     setCapture(slot.capture);
@@ -600,6 +607,7 @@ export function App() {
       setCapture(slot.capture);
       setCaptures(slot.captures);
       setZoomMode('fit');
+      setTool('browse');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : `打开${deviceLabels[device].title}失败`);
     } finally {
@@ -910,10 +918,10 @@ function DeviceFrame(props: {
     ? { width: `${Math.max(120, Math.round(capture.imageSize.width * (props.zoomPercent / 100)))}px` }
     : undefined;
   return (
-    <article data-testid={`device-${props.device}`} className={['mk-device-frame', `mk-device-${props.device}`, props.active ? 'is-active' : ''].filter(Boolean).join(' ')}>
+    <article data-testid={`device-${props.device}`} className={['mk-device-frame', `mk-device-${props.device}`, props.active ? 'is-active' : '', props.active && props.tool === 'browse' ? 'is-browse-tool' : ''].filter(Boolean).join(' ')}>
       <button className="mk-device-header" onClick={() => props.onActivate(props.device)} type="button">
         <span><strong>{label.title}</strong><small>{capture ? `${capture.viewport.width}x${capture.viewport.height}` : label.hint}</small></span>
-        <em>{props.active ? '正在标注' : '点击切换'}</em>
+        <em>{props.active ? (props.tool === 'browse' ? '正在浏览' : '正在标注') : '点击切换'}</em>
       </button>
       <div className="mk-device-shell">
         {capture ? (
@@ -933,7 +941,7 @@ function DeviceFrame(props: {
             {props.active ? (
               <svg className="mk-overlay" viewBox={`0 0 ${capture.imageSize.width} ${capture.imageSize.height}`}>
                 {props.domTargets.map((target) => props.tool === 'element' ? <rect key={target.id} className="mk-target-rect" x={target.captureRect.x} y={target.captureRect.y} width={target.captureRect.width} height={target.captureRect.height} /> : null)}
-                {props.activeTarget && ['browse', 'pointer', 'element', 'section'].includes(props.tool) ? <rect className="mk-target-active" x={props.activeTarget.captureRect.x} y={props.activeTarget.captureRect.y} width={props.activeTarget.captureRect.width} height={props.activeTarget.captureRect.height} /> : null}
+                {props.activeTarget && ['pointer', 'element', 'section'].includes(props.tool) ? <rect className="mk-target-active" x={props.activeTarget.captureRect.x} y={props.activeTarget.captureRect.y} width={props.activeTarget.captureRect.width} height={props.activeTarget.captureRect.height} /> : null}
                 {props.annotations.map((annotation, index) => <AnnotationShape key={annotation.id} annotation={annotation} selected={props.selectedAnnotationIds.includes(annotation.id)} index={index + 1} />)}
                 {props.dragStart ? <circle className="mk-rect-start" cx={props.dragStart.x} cy={props.dragStart.y} r="6" /> : null}
                 {props.rectPreview && (props.rectPreview.width > 2 || props.rectPreview.height > 2) ? (

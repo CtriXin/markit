@@ -1,14 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Router } from 'express';
+import type { Page } from 'playwright';
 
 import type { ServerContext } from '../context.js';
 import { parseHttpUrl, MarkitHttpError } from '../url-safety.js';
 import { capturePage } from '../runtime/capture.js';
-import { asyncHandler, first, nowIso } from './helpers.js';
+import { asyncHandler, nowIso } from './helpers.js';
 import { mapCapture, mapSession } from './mappers.js';
 
 type Viewport = { name: string; width: number; height: number; deviceScaleFactor: number; isMobile?: boolean };
+type SessionRow = NonNullable<ReturnType<ServerContext['repos']['sessions']['get']>>;
 
 const defaultViewport: Viewport = { name: 'Mobile 390x844', width: 390, height: 844, deviceScaleFactor: 3, isMobile: true };
 
@@ -96,8 +98,7 @@ export function sessionsRouter(context: ServerContext): Router {
     const sessionId = String(req.params.id);
     const session = context.repos.sessions.get(sessionId);
     if (!session) throw new MarkitHttpError(404, 'session_not_found', 'Session not found');
-    const page = context.runtime.getPage(sessionId);
-    if (!page) throw new MarkitHttpError(409, 'session_inactive', 'Session runtime page is inactive');
+    const page = await ensureSessionPage(context, sessionId, session);
     const baseSessionVersion = Number(req.body?.baseSessionVersion ?? session.session_version);
     if (baseSessionVersion !== Number(session.session_version)) {
       res.status(409).json({ staleBase: true, error: { code: 'stale_session', message: 'Session changed since the client action started' } });
@@ -147,9 +148,10 @@ export function sessionsRouter(context: ServerContext): Router {
     const session = context.repos.sessions.get(sessionId);
     if (!session) throw new MarkitHttpError(404, 'session_not_found', 'Session not found');
     const viewport = JSON.parse(String(session.viewport_json)) as Viewport;
-    const page = context.runtime.getPage(sessionId) ?? await context.runtime.createPage(sessionId, viewport);
+    const existingPage = context.runtime.getPage(sessionId);
+    const page = existingPage && !existingPage.isClosed() ? existingPage : await context.runtime.createPage(sessionId, viewport);
     await page.goto(url.toString(), { waitUntil: 'networkidle', timeout: 30_000 });
-    context.database.db.run('UPDATE sessions SET current_url = ?, title = ?, session_version = session_version + 1, updated_at = ? WHERE id = ?', [page.url(), await page.title(), nowIso(), sessionId]);
+    context.database.db.run('UPDATE sessions SET current_url = ?, title = ?, runtime_status = ?, session_version = session_version + 1, updated_at = ? WHERE id = ?', [page.url(), await page.title(), 'active', nowIso(), sessionId]);
     const capture = await createCapture(context, sessionId, 'viewport');
     await context.database.save();
     res.json({ session: mapSession(context.repos.sessions.get(sessionId)!), capture });
@@ -160,12 +162,12 @@ export function sessionsRouter(context: ServerContext): Router {
 }
 
 async function createCapture(context: ServerContext, sessionId: string, mode: 'viewport' | 'fullPage') {
-  const page = context.runtime.getPage(sessionId);
-  if (!page) throw new MarkitHttpError(409, 'session_inactive', 'Session runtime page is inactive');
   const session = context.repos.sessions.get(sessionId);
   if (!session) throw new MarkitHttpError(404, 'session_not_found', 'Session not found');
+  const page = await ensureSessionPage(context, sessionId, session);
+  const captureSession = context.repos.sessions.get(sessionId)!;
   const captureId = `cap_${randomUUID()}`;
-  const viewport = JSON.parse(String(session.viewport_json)) as Viewport;
+  const viewport = JSON.parse(String(captureSession.viewport_json)) as Viewport;
   const result = await capturePage({
     page,
     dataDir: context.dataDir,
@@ -174,8 +176,8 @@ async function createCapture(context: ServerContext, sessionId: string, mode: 'v
     metadata: {
       id: captureId,
       sessionId,
-      sessionVersion: Number(session.session_version),
-      url: String(session.current_url),
+      sessionVersion: Number(captureSession.session_version),
+      url: String(captureSession.current_url),
       finalUrl: page.url(),
       title: await page.title(),
       viewport
@@ -184,8 +186,8 @@ async function createCapture(context: ServerContext, sessionId: string, mode: 'v
   context.repos.captures.insert({
     id: captureId,
     sessionId,
-    sessionVersion: Number(session.session_version),
-    url: String(session.current_url),
+    sessionVersion: Number(captureSession.session_version),
+    url: String(captureSession.current_url),
     finalUrl: page.url(),
     title: await page.title(),
     viewport,
@@ -198,6 +200,18 @@ async function createCapture(context: ServerContext, sessionId: string, mode: 'v
     imageHeight: result.imageSize.height
   });
   return mapCapture(context.repos.captures.get(captureId)!);
+}
+
+async function ensureSessionPage(context: ServerContext, sessionId: string, sessionInput?: SessionRow): Promise<Page> {
+  const session = sessionInput ?? context.repos.sessions.get(sessionId);
+  if (!session) throw new MarkitHttpError(404, 'session_not_found', 'Session not found');
+  const existing = context.runtime.getPage(sessionId);
+  if (existing && !existing.isClosed()) return existing;
+  const viewport = JSON.parse(String(session.viewport_json)) as Viewport;
+  const page = await context.runtime.createPage(sessionId, viewport);
+  await page.goto(String(session.current_url || session.source_url), { waitUntil: 'networkidle', timeout: 30_000 });
+  context.database.db.run('UPDATE sessions SET current_url = ?, title = ?, runtime_status = ?, updated_at = ? WHERE id = ?', [page.url(), await page.title(), 'active', nowIso(), sessionId]);
+  return page;
 }
 
 function parseViewport(value: unknown): Viewport {

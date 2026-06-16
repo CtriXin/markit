@@ -119,6 +119,29 @@ describe('session and capture API', () => {
     expect(assetResponse.headers.get('content-type')).toContain('image/png');
   }, 30_000);
 
+  it('revives an inactive runtime page before browse actions', async () => {
+    const createResponse = await fetch(`${apiBaseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: `${fixtureBaseUrl}/index.html`, viewport: { name: 'Desktop 800x500', width: 800, height: 500, deviceScaleFactor: 1 } })
+    });
+    expect(createResponse.status).toBe(201);
+    const created = await createResponse.json();
+
+    await context.runtime.closeSession(created.session.id);
+    context.repos.sessions.updateStatus(created.session.id, 'inactive');
+
+    const actionResponse = await fetch(`${apiBaseUrl}/api/sessions/${created.session.id}/actions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'scroll', delta: { x: 0, y: 420 }, baseSessionVersion: created.session.sessionVersion })
+    });
+    expect(actionResponse.status).toBe(200);
+    const action = await actionResponse.json();
+    expect(action.session.runtimeStatus).toBe('active');
+    expect(action.capture.scroll.y).toBeGreaterThan(0);
+  }, 30_000);
+
   it('rejects unsupported URL schemes at API boundary', async () => {
     const response = await fetch(`${apiBaseUrl}/api/sessions`, {
       method: 'POST',

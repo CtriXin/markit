@@ -284,18 +284,18 @@
 .mk-mode-group button,
 .mk-device-switch button { grid-template-columns: auto; min-width: 48px; }
 .mk-region-tool-group {
-  border-color: rgba(22,119,255,.28);
-  background: linear-gradient(180deg, rgba(22,119,255,.10), #191815);
+  border-color: var(--mk-border);
+  background: #191815;
 }
 .mk-region-tool-group .mk-region-title {
   min-width: 96px;
-  color: #eaf3ff;
-  border-color: rgba(22,119,255,.22);
-  background: #202b3c;
+  color: #d7d1c7;
+  border-color: var(--mk-border);
+  background: #24231f;
 }
 .mk-region-tool-group .mk-region-title small {
-  color: #b9d6ff;
-  background: rgba(22,119,255,.18);
+  color: #908980;
+  background: #191815;
 }
 .mk-region-tool-group button:not(.mk-region-title) {
   min-width: 48px;
@@ -403,6 +403,7 @@
   background-size: 18px 18px;
 }
 .mk-device-frame.is-active .mk-device-shell { cursor: crosshair; }
+.mk-device-frame.is-active.is-browse-tool .mk-device-shell { cursor: default; }
 .mk-image-layer {
   position: relative;
   display: inline-block;

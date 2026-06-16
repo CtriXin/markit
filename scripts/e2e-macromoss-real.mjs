@@ -51,13 +51,15 @@ async function main() {
     }));
     if (!initial.address.startsWith(new URL(targetUrl).origin)) throw new Error(`Macromoss did not load target origin: ${initial.address}`);
     if (!initial.hasPc || initial.hasMobile) throw new Error(`Expected default single PC preview: ${JSON.stringify(initial)}`);
+    await assertBrowseMode(page, '初始进入会话');
     result.initial = initial;
     result.capabilities.realDomainRender = true;
     result.capabilities.singleDeviceDefault = true;
+    result.capabilities.defaultBrowseMode = true;
 
     await verifyAnnotationModeScroll(page);
     result.capabilities.annotationModeScroll = true;
-    await screenshot(page, '02-macromoss-annotation-mode-scroll.png');
+    result.capabilities.navigateReturnsBrowseMode = true;
 
     const clickResult = await clickRealNavigation(page);
     result.capabilities.realClickNavigation = clickResult.afterUrl !== clickResult.beforeUrl;
@@ -148,11 +150,13 @@ async function verifyAnnotationModeScroll(page) {
   await waitIdle(page);
   const afterScroll = await currentScroll(page);
   if (afterScroll.y <= beforeScroll.y) throw new Error(`Annotation mode wheel did not scroll target page: before=${JSON.stringify(beforeScroll)} after=${JSON.stringify(afterScroll)}`);
+  await screenshot(page, '02-macromoss-annotation-mode-scroll.png');
   const resetCapture = await currentCaptureId(page);
   await page.getByTestId('session-address').fill(targetUrl);
   await page.getByTestId('navigate-active').click();
   await waitForCaptureChange(page, resetCapture);
   await waitIdle(page);
+  await assertBrowseMode(page, '导航后');
 }
 
 async function verifyFreehand(page) {
@@ -349,6 +353,16 @@ async function drawLoop(page, rect) {
 async function setTool(page, tool) {
   await page.getByTestId(`tool-${tool}`).click();
   await page.waitForSelector(`[data-testid="tool-${tool}"].is-active`);
+}
+
+async function assertBrowseMode(page, context) {
+  const browseActive = await page.getByTestId('tool-browse').evaluate((node) => node.classList.contains('is-active'));
+  const rectActive = await page.getByTestId('tool-rect').evaluate((node) => node.classList.contains('is-active'));
+  const regionActive = await page.getByTestId('tool-region').evaluate((node) => node.classList.contains('is-active'));
+  const deviceText = await page.getByTestId('device-pc').locator('.mk-device-header em').innerText();
+  if (!browseActive || rectActive || regionActive || !deviceText.includes('正在浏览')) {
+    throw new Error(`${context} should be browser mode: browse=${browseActive} rect=${rectActive} region=${regionActive} device=${deviceText}`);
+  }
 }
 
 async function currentTargets(page) {
