@@ -22,6 +22,10 @@ type QuickComment = { annotationId: string; captureId: string; rect: Rect; text:
 type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; annotationCount?: number; assetCount?: number; exportPath?: string; createdAt?: string; updatedAt?: string };
 type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; assets: BugAsset[] };
 type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
+type CatalogStatus = { schema: 'markit.catalog.status.v1'; enabled: boolean; root: string; reason?: string; generatedAt?: string; projectCount?: number; domainCount?: number; source?: { pendingAssociations?: number }; integration?: { syncPolicy?: string } };
+type CatalogProject = { id: string; name: string; status: string; aliases: string[]; domainCount: number; activeDomainCount: number; pendingDomainCount: number; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; labels?: string[]; testing?: { enabled: boolean; defaultViewport: string; viewports: string[] }; confidence?: number };
+type CatalogDomain = { host: string; url: string; projectId: string; projectName: string; env: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; defaultAssignee?: string; confidence?: number };
+type CatalogResolveResult = { status: CatalogStatus; input: string; hostname?: string; matched: boolean; matchedHost?: string; reason?: string; domain?: CatalogDomain; project?: CatalogProject };
 
 type DraftBug = { title: string; actual: string; expected: string; severity: string; status: string; comment: string; bugType: string; requirementUrl: string; designUrl: string };
 type ActionOptions = { quiet?: boolean; checkStale?: boolean };
@@ -102,6 +106,12 @@ export function App() {
   const [freehand, setFreehand] = useState<Point[]>([]);
   const freehandRef = useRef<Point[]>([]);
   const [aiStatus, setAiStatus] = useState<AiStatus>({ enabled: false, provider: 'off' });
+  const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>({ schema: 'markit.catalog.status.v1', enabled: false, root: '' });
+  const [catalogProjects, setCatalogProjects] = useState<CatalogProject[]>([]);
+  const [catalogDomains, setCatalogDomains] = useState<CatalogDomain[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [selectedDomainHost, setSelectedDomainHost] = useState('');
+  const [catalogMatch, setCatalogMatch] = useState<CatalogResolveResult>();
   const [deviceSlots, setDeviceSlots] = useState<Partial<Record<DeviceKey, DeviceSlot>>>({});
   const [activeDevice, setActiveDevice] = useState<DeviceKey>('pc');
   const [previewMode, setPreviewMode] = useState<PreviewMode>('single');
@@ -123,8 +133,47 @@ export function App() {
     fetch('/api/health').then((r) => r.json()).then((body) => setHealth({ kind: 'ok', version: body.version })).catch((error) => setHealth({ kind: 'error', message: String(error) }));
     void refreshSessions();
     void refreshBugs();
+    void refreshCatalog();
     fetch('/api/ai/status').then((r) => r.json()).then(setAiStatus).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!catalogStatus.enabled || !selectedProjectId) {
+      setCatalogDomains([]);
+      return;
+    }
+    const controller = new AbortController();
+    void api<{ status: CatalogStatus; domains: CatalogDomain[] }>(`/api/catalog/domains?projectId=${encodeURIComponent(selectedProjectId)}`, { signal: controller.signal })
+      .then((body) => {
+        setCatalogDomains(body.domains);
+        if (!body.domains.some((domain) => domain.host === selectedDomainHost)) setSelectedDomainHost('');
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setMessage(error instanceof Error ? `读取项目域名失败：${error.message}` : '读取项目域名失败');
+      });
+    return () => controller.abort();
+  }, [catalogStatus.enabled, selectedDomainHost, selectedProjectId]);
+
+  useEffect(() => {
+    if (!catalogStatus.enabled || !url.trim()) {
+      setCatalogMatch(undefined);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void api<CatalogResolveResult>(`/api/catalog/resolve?url=${encodeURIComponent(url)}`, { signal: controller.signal })
+        .then((body) => {
+          if (!controller.signal.aborted) setCatalogMatch(body.hostname ? body : undefined);
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setCatalogMatch(undefined);
+        });
+    }, 300);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [catalogStatus.enabled, url]);
 
   useEffect(() => {
     if (!capture) return;
@@ -311,6 +360,33 @@ export function App() {
   async function refreshBugs() {
     const body = await api<{ bugs: Bug[] }>('/api/bugs');
     setBugs(body.bugs);
+  }
+
+  async function refreshCatalog() {
+    try {
+      const body = await api<{ status: CatalogStatus; projects: CatalogProject[] }>('/api/catalog/projects?limit=250');
+      setCatalogStatus(body.status);
+      setCatalogProjects(body.projects);
+    } catch (error) {
+      setCatalogStatus({ schema: 'markit.catalog.status.v1', enabled: false, root: '', reason: error instanceof Error ? error.message : 'catalog_unavailable' });
+      setCatalogProjects([]);
+    }
+  }
+
+  function selectCatalogProject(projectId: string) {
+    setSelectedProjectId(projectId);
+    setSelectedDomainHost('');
+    setCatalogDomains([]);
+  }
+
+  function selectCatalogDomain(host: string) {
+    setSelectedDomainHost(host);
+    const domain = catalogDomains.find((item) => item.host === host);
+    if (domain) setUrl(domain.url);
+    const project = catalogProjects.find((item) => item.id === selectedProjectId);
+    if (project?.testing?.defaultViewport && viewportOptions.some((viewport) => viewport.key === project.testing?.defaultViewport)) {
+      setViewportKey(project.testing.defaultViewport);
+    }
   }
 
   async function loadBugDetail(id: string) {
@@ -852,7 +928,28 @@ export function App() {
           <HealthBadge health={health} />
         </div>
       </nav>
-      {view === 'home' ? <Home url={url} setUrl={setUrl} viewportKey={viewportKey} setViewportKey={setViewportKey} createSession={createSession} busy={busy} message={message} sessions={sessions} openSession={openExistingSession} bugs={bugs} /> : null}
+      {view === 'home' ? (
+        <Home
+          url={url}
+          setUrl={setUrl}
+          viewportKey={viewportKey}
+          setViewportKey={setViewportKey}
+          createSession={createSession}
+          busy={busy}
+          message={message}
+          sessions={sessions}
+          openSession={openExistingSession}
+          bugs={bugs}
+          catalogStatus={catalogStatus}
+          catalogProjects={catalogProjects}
+          catalogDomains={catalogDomains}
+          selectedProjectId={selectedProjectId}
+          selectedDomainHost={selectedDomainHost}
+          catalogMatch={catalogMatch}
+          selectCatalogProject={selectCatalogProject}
+          selectCatalogDomain={selectCatalogDomain}
+        />
+      ) : null}
       {view === 'session' && session && capture ? (
         <section className={workbenchClass} data-testid="workbench">
           <aside className="mk-left-rail" data-collapsed={leftCollapsed}>
@@ -1224,15 +1321,44 @@ function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width:
   );
 }
 
-function Home(props: { url: string; setUrl: (value: string) => void; viewportKey: string; setViewportKey: (value: string) => void; createSession: (event: FormEvent) => void; busy: string; message: string; sessions: Session[]; openSession: (session: Session) => void; bugs: Bug[] }) {
+function Home(props: {
+  url: string;
+  setUrl: (value: string) => void;
+  viewportKey: string;
+  setViewportKey: (value: string) => void;
+  createSession: (event: FormEvent) => void;
+  busy: string;
+  message: string;
+  sessions: Session[];
+  openSession: (session: Session) => void;
+  bugs: Bug[];
+  catalogStatus: CatalogStatus;
+  catalogProjects: CatalogProject[];
+  catalogDomains: CatalogDomain[];
+  selectedProjectId: string;
+  selectedDomainHost: string;
+  catalogMatch: CatalogResolveResult | undefined;
+  selectCatalogProject: (projectId: string) => void;
+  selectCatalogDomain: (host: string) => void;
+}) {
   return (
     <section className="mk-home-card">
       <div className="mk-kicker">本地网页验收</div>
       <h1>Markit</h1>
       <p>把任意真实 URL 变成可点击、可标注、可导出证据的 Bug 工作台；默认单端验收，需要时再切换 PC / Mobile 或开启双端对照。</p>
+      <ProjectCatalogPicker
+        status={props.catalogStatus}
+        projects={props.catalogProjects}
+        domains={props.catalogDomains}
+        selectedProjectId={props.selectedProjectId}
+        selectedDomainHost={props.selectedDomainHost}
+        match={props.catalogMatch}
+        onProjectChange={props.selectCatalogProject}
+        onDomainChange={props.selectCatalogDomain}
+      />
       <form className="mk-url-form" onSubmit={props.createSession}>
         <label>
-          <span>URL</span>
+          <span>URL / 直接输入仍可反查绑定</span>
           <input data-testid="url-input" type="url" required value={props.url} onChange={(event) => props.setUrl(event.currentTarget.value)} placeholder="https://example.com 或 http://localhost:3000" />
         </label>
         <label>
@@ -1253,6 +1379,86 @@ function Home(props: { url: string; setUrl: (value: string) => void; viewportKey
         </section>
       </div>
     </section>
+  );
+}
+
+function ProjectCatalogPicker(props: {
+  status: CatalogStatus;
+  projects: CatalogProject[];
+  domains: CatalogDomain[];
+  selectedProjectId: string;
+  selectedDomainHost: string;
+  match: CatalogResolveResult | undefined;
+  onProjectChange: (projectId: string) => void;
+  onDomainChange: (host: string) => void;
+}) {
+  if (!props.status.enabled) {
+    return (
+      <div className="mk-catalog-panel is-disabled" data-testid="catalog-disabled">
+        <div>
+          <strong>Project Catalog 未启用</strong>
+          <span>直接输入 URL 仍可测试；设置 `MARKIT_CATALOG_ROOT=/path/to/ptc-wiki` 后会启用项目/域名选择。</span>
+        </div>
+        <em>{props.status.reason ?? 'catalog_disabled'}</em>
+      </div>
+    );
+  }
+
+  const selectedProject = props.projects.find((project) => project.id === props.selectedProjectId);
+  const selectedDomain = props.domains.find((domain) => domain.host === props.selectedDomainHost);
+
+  return (
+    <div className="mk-catalog-panel" data-testid="catalog-picker">
+      <div className="mk-catalog-head">
+        <div>
+          <strong>Project Catalog</strong>
+          <span>{props.projects.length} 个项目 / {props.status.domainCount ?? 0} 个域名；选择后会填入 URL。</span>
+        </div>
+        <em>{props.status.source?.pendingAssociations ? `${props.status.source.pendingAssociations} 条 pending 关联` : 'catalog ready'}</em>
+      </div>
+      <div className="mk-catalog-controls">
+        <label>
+          <span>项目</span>
+          <select data-testid="catalog-project-select" value={props.selectedProjectId} onChange={(event) => props.onProjectChange(event.currentTarget.value)}>
+            <option value="">不绑定项目 / 直接输入 URL</option>
+            {props.projects.map((project) => (
+              <option key={project.id} value={project.id}>{project.name} · {project.scmpService ?? project.id}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>域名</span>
+          <select data-testid="catalog-domain-select" value={props.selectedDomainHost} disabled={!props.selectedProjectId || !props.domains.length} onChange={(event) => props.onDomainChange(event.currentTarget.value)}>
+            <option value="">{props.selectedProjectId ? '选择已绑定域名' : '先选择项目'}</option>
+            {props.domains.map((domain) => (
+              <option key={domain.host} value={domain.host}>{domain.host} · {domain.env} · {catalogStatusText(domain.status)}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {selectedProject ? (
+        <div className="mk-catalog-meta">
+          <span>{selectedProject.gitlabPath ?? '未记录 repo'}</span>
+          <span>{selectedProject.activeBranch ? `branch ${selectedProject.activeBranch}` : '未记录 branch'}</span>
+          <span>{selectedDomain ? `${catalogStatusText(selectedDomain.status)} / ${selectedDomain.env}` : `${selectedProject.domainCount} 个域名`}</span>
+        </div>
+      ) : null}
+      {props.match?.hostname ? (
+        <div className={props.match.matched ? 'mk-catalog-match is-hit' : 'mk-catalog-match'} data-testid="catalog-url-match">
+          {props.match.matched && props.match.project && props.match.domain ? (
+            <>
+              <strong>已识别：{props.match.project.name}</strong>
+              <span>{props.match.domain.host} · {catalogStatusText(props.match.domain.status)} · {props.match.domain.activeBranch || props.match.project.activeBranch || '未记录 branch'}</span>
+            </>
+          ) : (
+            <>
+              <strong>未找到绑定项目</strong>
+              <span>{props.match.hostname} 不在当前 catalog domain index 中。</span>
+            </>
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1644,6 +1850,10 @@ function safeHost(value: string): string {
   } catch {
     return value;
   }
+}
+
+function catalogStatusText(value: string): string {
+  return ({ active: '已验证', pending: '待确认', archived: '已归档', unknown: '未知' } as Record<string, string>)[value] ?? value;
 }
 
 function formatBytes(value: number): string {

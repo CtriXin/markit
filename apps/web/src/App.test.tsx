@@ -20,6 +20,9 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('Bug 草稿');
     expect(source).toContain('保存为一个 Bug');
     expect(source).toContain('data-testid="url-input"');
+    expect(source).toContain('Project Catalog');
+    expect(source).toContain('data-testid="catalog-project-select"');
+    expect(source).toContain('直接输入 URL 仍可测试');
     expect(source).not.toMatch(/ChatComposer|project\/run/i);
   });
 });
