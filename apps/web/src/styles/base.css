@@ -1,9 +1,13 @@
 * { box-sizing: border-box; }
-html { color-scheme: dark; }
+html {
+  color-scheme: dark;
+  overscroll-behavior: none;
+}
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overscroll-behavior: none;
   color: var(--mk-text);
   background: var(--mk-bg);
   font-family: "PingFang SC", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;

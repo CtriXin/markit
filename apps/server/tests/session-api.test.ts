@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join, resolve } from 'node:path';
 import { createApp } from '../src/app.js';
@@ -23,7 +23,10 @@ const projectSnapshot = {
     name: 'Demo Project',
     status: 'active',
     gitlabPath: 'ptc/fe/demo',
-    activeBranch: 'release-1.2.3'
+    activeBranch: 'release-1.2.3',
+    issueProjectPath: 'ptc/fe/demo',
+    defaultAssignee: 'xin',
+    labels: ['markit', 'bug']
   },
   domain: {
     host: 'demo.example.com',
@@ -144,6 +147,24 @@ describe('session and capture API', () => {
     const assetResponse = await fetch(`${apiBaseUrl}/api/bug-assets/${bugBody.assets[0].id}/image`);
     expect(assetResponse.status).toBe(200);
     expect(assetResponse.headers.get('content-type')).toContain('image/png');
+    const bulkExportResponse = await fetch(`${apiBaseUrl}/api/bugs/bulk-export`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bugIds: [bugBody.bug.id] })
+    });
+    expect(bulkExportResponse.status).toBe(200);
+    const bulkExport = await bulkExportResponse.json();
+    expect(bulkExport).toMatchObject({ count: 1, exports: [expect.objectContaining({ bugId: bugBody.bug.id })] });
+    const issueDraftResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-draft`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bugIds: [bugBody.bug.id] })
+    });
+    expect(issueDraftResponse.status).toBe(200);
+    const issueDraft = await issueDraftResponse.json();
+    expect(issueDraft).toMatchObject({ mode: 'dry-run', count: 1, issues: [expect.objectContaining({ projectPath: 'ptc/fe/demo', assignee: 'xin' })] });
+    expect(await readFile(issueDraft.jsonPath, 'utf8')).toContain('markit.gitlab-issue-draft.v1');
+    expect(await readFile(issueDraft.markdownPath, 'utf8')).toContain('[P2] demo.example.com - 粘贴截图证据');
 
     const deleteResponse = await fetch(`${apiBaseUrl}/api/bugs/${bugBody.bug.id}`, { method: 'DELETE' });
     expect(deleteResponse.status).toBe(200);
