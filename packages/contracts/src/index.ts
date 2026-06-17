@@ -30,12 +30,41 @@ export const viewportPresets = [
 ] satisfies Viewport[];
 
 export const sessionStatusSchema = z.enum(['active', 'inactive', 'expired', 'archived', 'error']);
+export const projectSnapshotSchema = z.object({
+  schema: z.literal('markit.project-snapshot.v1'),
+  source: z.enum(['client', 'catalog-resolve']),
+  capturedAt: z.string().datetime(),
+  catalogRoot: z.string().optional(),
+  catalogGeneratedAt: z.string().datetime().optional(),
+  project: z.object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    status: z.string(),
+    scmpService: z.string().optional(),
+    gitlabPath: z.string().optional(),
+    activeBranch: z.string().optional(),
+    issueProjectPath: z.string().optional(),
+    defaultAssignee: z.string().optional(),
+    labels: z.array(z.string()).optional(),
+    confidence: z.number().min(0).max(1).optional()
+  }),
+  domain: z.object({
+    host: z.string().min(1),
+    url: z.string().url(),
+    env: z.string(),
+    status: z.string(),
+    matchedHost: z.string().optional()
+  }).optional()
+});
+export type ProjectSnapshot = z.infer<typeof projectSnapshotSchema>;
+
 export const markitSessionSchema = z.object({
   id: z.string().min(1),
   sourceUrl: z.string().url(),
   currentUrl: z.string().url(),
   title: z.string(),
   viewport: viewportSchema,
+  projectSnapshot: projectSnapshotSchema.optional(),
   sessionVersion: z.number().int().nonnegative(),
   runtimeStatus: sessionStatusSchema,
   createdAt: z.string().datetime(),

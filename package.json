@@ -12,7 +12,8 @@
     "probe:pixels": "pnpm --filter @markit/server probe:pixels",
     "e2e:tongzhang-er": "node scripts/e2e-tongzhang-er.mjs",
     "e2e:public-url": "node scripts/e2e-public-url-smoke.mjs",
-    "e2e:macromoss": "node scripts/e2e-macromoss-real.mjs"
+    "e2e:macromoss": "node scripts/e2e-macromoss-real.mjs",
+    "e2e:catalog-snapshot": "node scripts/e2e-catalog-snapshot.mjs"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

@@ -14,6 +14,24 @@ let context: ServerContext;
 let dataDir: string;
 let fixtureBaseUrl: string;
 let apiBaseUrl: string;
+const projectSnapshot = {
+  schema: 'markit.project-snapshot.v1',
+  source: 'client',
+  capturedAt: '2026-06-17T00:00:00.000Z',
+  project: {
+    id: 'ptc-demo',
+    name: 'Demo Project',
+    status: 'active',
+    gitlabPath: 'ptc/fe/demo',
+    activeBranch: 'release-1.2.3'
+  },
+  domain: {
+    host: 'demo.example.com',
+    url: 'https://demo.example.com',
+    env: 'prod',
+    status: 'active'
+  }
+};
 
 function listen(server: Server): Promise<string> {
   return new Promise((resolveListen) => {
@@ -66,11 +84,16 @@ describe('session and capture API', () => {
     const response = await fetch(`${apiBaseUrl}/api/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: `${fixtureBaseUrl}/index.html`, viewport: { name: 'Mobile 390x844', width: 390, height: 844, deviceScaleFactor: 2, isMobile: true } })
+      body: JSON.stringify({
+        url: `${fixtureBaseUrl}/index.html`,
+        viewport: { name: 'Mobile 390x844', width: 390, height: 844, deviceScaleFactor: 2, isMobile: true },
+        projectSnapshot
+      })
     });
     expect(response.status).toBe(201);
     const body = await response.json();
     expect(body.session.sourceUrl).toBe(`${fixtureBaseUrl}/index.html`);
+    expect(body.session.projectSnapshot).toMatchObject({ project: { id: 'ptc-demo', name: 'Demo Project' }, domain: { host: 'demo.example.com' } });
     expect(body.capture.imageSize).toMatchObject({ width: 390, height: 844 });
 
     const imageResponse = await fetch(`${apiBaseUrl}/api/captures/${body.capture.id}/image`);

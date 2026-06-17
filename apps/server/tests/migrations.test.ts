@@ -12,8 +12,8 @@ describe('SQLite migrations', () => {
     applyMigrations(db);
     applyMigrations(db);
 
-    expect(getAppliedMigrationVersions(db)).toEqual([1, 2, 3]);
-    expect(getUserVersion(db)).toBe(3);
+    expect(getAppliedMigrationVersions(db)).toEqual([1, 2, 3, 4]);
+    expect(getUserVersion(db)).toBe(4);
     expect(tableNames(db)).toEqual(expect.arrayContaining([
       'schema_migrations',
       'settings',

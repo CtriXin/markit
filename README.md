@@ -12,6 +12,7 @@ pnpm build
 pnpm probe:pixels
 pnpm e2e:tongzhang-er
 pnpm e2e:public-url
+pnpm e2e:catalog-snapshot
 pnpm e2e:macromoss
 pnpm dev
 ```
@@ -37,6 +38,7 @@ pnpm dev
 - AI normalizer：`MARKIT_AI_PROVIDER=mock` 可本地验证；支持 `openai-compatible`、`local-mms-mmf`、`MARKIT_MMF_CONFIG` 配置文件和本机 MMS route auto-discovery。
 - 通胀二 Playwright E2E：`pnpm e2e:tongzhang-er` 会启动 fixture/app，模拟 5 个飞书 bug，生成截图和解析到 `.agent.local/evidence/tongzhang-er-final/`。
 - 真实公网 URL smoke：`pnpm e2e:public-url` 默认访问 `https://example.com/`，验证默认单端与可选双端真实 Playwright 渲染，证据输出到 `.agent.local/evidence/public-url-smoke/`。
+- Project Catalog snapshot smoke：`pnpm e2e:catalog-snapshot` 使用临时 catalog + 本地 fixture URL，验证 URL 反查、session `projectSnapshot`、工作台项目 badge 和导出 Markdown 项目信息。
 - Macromoss 真实站点 smoke：`pnpm e2e:macromoss` 访问 `https://macromoss.com/`，验证真实点击跳转、圈画、section 选择与可选双端，证据输出到 `.agent.local/evidence/macromoss-real/`。
 
 ## Project Catalog
@@ -60,6 +62,8 @@ API：
 - `GET /api/catalog/projects?query=...`
 - `GET /api/catalog/domains?projectId=...`
 - `GET /api/catalog/resolve?url=...`
+
+创建 session 时 Markit 会保存 `projectSnapshot`。它会固定项目名、域名、repo、branch、assignee/labels 和 catalog 生成时间，后续 catalog 更新不会改写历史 session / bug export。Bug 导出的 `bug.md` / `bug.json` 会带上对应项目信息，方便后续发布 GitLab Issue。
 
 ## AI normalizer
 
@@ -108,6 +112,8 @@ pnpm dev
 - `.agent.local/evidence/tongzhang-er-final/*.png`
 - `.agent.local/evidence/public-url-smoke/result.json`
 - `.agent.local/evidence/public-url-smoke/*.png`
+- `.agent.local/evidence/catalog-snapshot-smoke/result.json`
+- `.agent.local/evidence/catalog-snapshot-smoke/*.png`
 - `.agent.local/evidence/macromoss-real/result.json`
 - `.agent.local/evidence/macromoss-real/*.png`
 - `.markit/exports/<bug-id>/bug.md`
