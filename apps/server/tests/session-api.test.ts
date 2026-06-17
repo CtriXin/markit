@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
-import type { Server } from 'node:http';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { createReadStream } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -14,6 +14,7 @@ let context: ServerContext;
 let dataDir: string;
 let fixtureBaseUrl: string;
 let apiBaseUrl: string;
+const gitLabApiRequests: Array<{ method: string; url: string; body: string }> = [];
 const projectSnapshot = {
   schema: 'markit.project-snapshot.v1',
   source: 'client',
@@ -55,6 +56,10 @@ describe('session and capture API', () => {
   beforeAll(async () => {
     const fixtureRoot = resolve(import.meta.dirname, '../../../fixtures/test-site');
     fixtureServer = createServer((req, res) => {
+      if (req.url?.startsWith('/api/v4/')) {
+        void handleGitLabFixture(req, res);
+        return;
+      }
       const urlPath = req.url === '/' ? '/index.html' : req.url || '/index.html';
       const filePath = join(fixtureRoot, urlPath.replace(/^\//, ''));
       res.setHeader('content-type', extname(filePath) === '.html' ? 'text/html' : 'text/plain');
@@ -299,6 +304,78 @@ describe('session and capture API', () => {
     expect(primaryScreenshot.length).toBeGreaterThan(0);
   }, 30_000);
 
+  it('assigns GitLab issues to the current user when catalog has no default assignee', async () => {
+    const createResponse = await fetch(`${apiBaseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        url: `${fixtureBaseUrl}/index.html`,
+        viewport: { name: 'Desktop 800x500', width: 800, height: 500, deviceScaleFactor: 1 },
+        projectSnapshot: {
+          ...projectSnapshot,
+          project: {
+            ...projectSnapshot.project,
+            id: 'ptc-no-assignee',
+            name: 'No Assignee Project',
+            defaultAssignee: ''
+          },
+          domain: {
+            ...projectSnapshot.domain,
+            host: 'no-assignee.example.com',
+            url: 'https://no-assignee.example.com'
+          }
+        }
+      })
+    });
+    expect(createResponse.status).toBe(201);
+    const created = await createResponse.json();
+    const bugResponse = await fetch(`${apiBaseUrl}/api/bugs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: created.session.id,
+        title: '无默认负责人',
+        actual: '项目未配置 defaultAssignee。',
+        expected: '真实挂载时应默认分配当前 GitLab 用户。',
+        severity: 'P2',
+        status: 'draft',
+        sourceUrl: created.session.sourceUrl,
+        finalUrl: created.capture.finalUrl,
+        primaryCaptureId: created.capture.id
+      })
+    });
+    expect(bugResponse.status).toBe(201);
+    const bugBody = await bugResponse.json();
+    const previousGitLab = {
+      baseUrl: process.env.MARKIT_GITLAB_BASE_URL,
+      auth: process.env.MARKIT_GITLAB_AUTH,
+      token: process.env.MARKIT_GITLAB_TOKEN
+    };
+    gitLabApiRequests.length = 0;
+    process.env.MARKIT_GITLAB_BASE_URL = fixtureBaseUrl;
+    process.env.MARKIT_GITLAB_AUTH = 'token';
+    process.env.MARKIT_GITLAB_TOKEN = 'test-token';
+    try {
+      const submitResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ bugIds: [bugBody.bug.id] })
+      });
+      expect(submitResponse.status).toBe(200);
+      const submitBody = await submitResponse.json();
+      expect(submitBody.submissions[0]).toMatchObject({ assignee: 'songxin', assigneeResolved: true });
+      const issueRequest = gitLabApiRequests.find((request) => request.method === 'POST' && request.url.includes('/issues'));
+      expect(issueRequest).toBeTruthy();
+      const issueBody = JSON.parse(issueRequest?.body || '{}');
+      expect(issueBody.assignee_ids).toEqual([501]);
+      expect(issueBody.description).toContain('Assignee Suggestion: songxin (default current GitLab user)');
+    } finally {
+      restoreEnv('MARKIT_GITLAB_BASE_URL', previousGitLab.baseUrl);
+      restoreEnv('MARKIT_GITLAB_AUTH', previousGitLab.auth);
+      restoreEnv('MARKIT_GITLAB_TOKEN', previousGitLab.token);
+    }
+  }, 30_000);
+
   it('revives an inactive runtime page before browse actions', async () => {
     const createResponse = await fetch(`${apiBaseUrl}/api/sessions`, {
       method: 'POST',
@@ -496,6 +573,38 @@ describe('session and capture API', () => {
     }
   });
 });
+
+async function handleGitLabFixture(req: IncomingMessage, res: ServerResponse) {
+  const body = await readRequestBody(req);
+  gitLabApiRequests.push({ method: req.method ?? 'GET', url: req.url ?? '', body });
+  res.setHeader('content-type', 'application/json');
+  if (req.method === 'GET' && req.url === '/api/v4/user') {
+    res.end(JSON.stringify({ id: 501, username: 'songxin', name: '宋鑫' }));
+    return;
+  }
+  if (req.method === 'POST' && req.url?.includes('/uploads')) {
+    res.end(JSON.stringify({
+      markdown: '![screenshot](/uploads/mock/screenshot.png)',
+      url: '/uploads/mock/screenshot.png',
+      full_path: '/-/project/816/uploads/mock/screenshot.png'
+    }));
+    return;
+  }
+  if (req.method === 'POST' && req.url?.includes('/issues')) {
+    res.end(JSON.stringify({ id: 1001, iid: 101, web_url: `${fixtureBaseUrl}/ptc/fe/ptc-wiki/-/work_items/101` }));
+    return;
+  }
+  res.statusCode = 404;
+  res.end(JSON.stringify({ message: 'not found' }));
+}
+
+function readRequestBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolveBody) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    req.on('end', () => resolveBody(Buffer.concat(chunks).toString('utf8')));
+  });
+}
 
 function restoreEnv(key: string, value: string | undefined) {
   if (value === undefined) delete process.env[key];

@@ -61,6 +61,12 @@ type GitLabIssueResult = {
   synced?: boolean;
 };
 
+type GitLabCurrentUser = {
+  id: number;
+  username: string;
+  name?: string;
+};
+
 type GitLabUploadResult = {
   filePath: string;
   markdown: string;
@@ -619,11 +625,15 @@ function gitLabConfigFromEnv(env: NodeJS.ProcessEnv): GitLabConfig {
 
 async function submitGitLabIssues(issues: IssuePayload[], config: GitLabConfig): Promise<GitLabIssueResult[]> {
   const assigneeCache = new Map<string, number | undefined>();
+  let currentUser: GitLabCurrentUser | undefined;
   const results: GitLabIssueResult[] = [];
   for (const issue of issues) {
-    const assigneeId = issue.assignee ? await resolveGitLabUserId(config, issue.assignee, assigneeCache) : undefined;
+    const configuredAssignee = issue.assignee.trim();
+    const currentAssignee = configuredAssignee ? undefined : (currentUser ??= await resolveCurrentGitLabUser(config));
+    const assigneeUsername = configuredAssignee || currentAssignee?.username || '';
+    const assigneeId = configuredAssignee ? await resolveGitLabUserId(config, configuredAssignee, assigneeCache) : currentAssignee?.id;
     const uploadedEvidence = await uploadIssueEvidence(config, issue);
-    const description = withUploadedEvidence(issue.description, uploadedEvidence);
+    const description = withUploadedEvidence(withResolvedAssignee(issue.description, configuredAssignee, assigneeUsername), uploadedEvidence);
     const body: Record<string, unknown> = {
       title: issue.title,
       description,
@@ -644,13 +654,17 @@ async function submitGitLabIssues(issues: IssuePayload[], config: GitLabConfig):
       id: created.id,
       webUrl,
       workItemUrl: `${config.baseUrl}/${issue.projectPath}/-/work_items/${created.iid}`,
-      assignee: issue.assignee,
+      assignee: assigneeUsername,
       assigneeResolved: Boolean(assigneeId),
       labels: issue.labels,
       uploadedEvidence
     });
   }
   return results;
+}
+
+async function resolveCurrentGitLabUser(config: GitLabConfig): Promise<GitLabCurrentUser | undefined> {
+  return await gitLabRequest<GitLabCurrentUser>(config, '/api/v4/user', { method: 'GET' });
 }
 
 async function uploadIssueEvidence(config: GitLabConfig, issue: IssuePayload): Promise<GitLabUploadResult[]> {
@@ -705,6 +719,11 @@ function withUploadedEvidence(description: string, uploaded: GitLabUploadResult[
     return `- ${linkedName}\n\n${item.markdown}`;
   }).join('\n\n');
   return `${description}\n\n## Screenshots\n\n${screenshots}\n`;
+}
+
+function withResolvedAssignee(description: string, configuredAssignee: string, assigneeUsername: string): string {
+  if (configuredAssignee || !assigneeUsername) return description;
+  return description.replace('- Assignee Suggestion: not configured', `- Assignee Suggestion: ${assigneeUsername} (default current GitLab user)`);
 }
 
 async function resolveGitLabUserId(config: GitLabConfig, username: string, cache: Map<string, number | undefined>): Promise<number | undefined> {
