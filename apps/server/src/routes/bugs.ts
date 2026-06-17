@@ -55,7 +55,9 @@ type GitLabIssueResult = {
   assigneeResolved: boolean;
   labels: string[];
   uploadedEvidence: GitLabUploadResult[];
+  remoteEvidenceCount?: number;
   reused?: boolean;
+  synced?: boolean;
 };
 
 type GitLabUploadResult = {
@@ -63,6 +65,7 @@ type GitLabUploadResult = {
   markdown: string;
   url?: string;
   fullPath?: string;
+  assetUrl?: string;
 };
 
 type DirectoryEntry = {
@@ -73,13 +76,14 @@ type DirectoryEntry = {
 export function bugsRouter(context: ServerContext): Router {
   const router = Router();
 
-  router.get('/api/bugs', (req, res) => {
+  router.get('/api/bugs', asyncHandler(async (req, res) => {
     const status = req.query.status ? String(req.query.status) : undefined;
     const rows = status && status !== 'all'
       ? all(context.database.db, 'SELECT * FROM bugs WHERE status = ? ORDER BY created_at DESC', [status])
       : all(context.database.db, 'SELECT * FROM bugs ORDER BY created_at DESC');
-    res.json({ bugs: rows.map((row) => ({ ...mapBug(row), projectSnapshot: projectSnapshotForBug(context, row), annotationCount: countRelations(context, String(row.id)), assetCount: countAssets(context, String(row.id)) })) });
-  });
+    const submissions = await existingSubmissionsForBugs(context, rows.map((row) => String(row.id)));
+    res.json({ bugs: rows.map((row) => bugSummaryFromRow(context, row, submissions.get(String(row.id)))) });
+  }));
 
   router.post('/api/bugs', asyncHandler(async (req, res) => {
     validateBugInput(req.body);
@@ -241,6 +245,17 @@ function countAssets(context: ServerContext, bugId: string): number {
   return Number(row?.count ?? 0);
 }
 
+function bugSummaryFromRow(context: ServerContext, row: Row, issueSubmission?: GitLabIssueResult) {
+  const bugId = String(row.id);
+  return {
+    ...mapBug(row),
+    projectSnapshot: projectSnapshotForBug(context, row),
+    annotationCount: countRelations(context, bugId),
+    assetCount: countAssets(context, bugId),
+    issueSubmission
+  };
+}
+
 async function bugDetail(context: ServerContext, id: string) {
   const bug = first(context.database.db, 'SELECT * FROM bugs WHERE id = ?', [id]);
   if (!bug) throw new MarkitHttpError(404, 'bug_not_found', 'Bug not found');
@@ -255,7 +270,8 @@ async function bugDetail(context: ServerContext, id: string) {
   }).filter(Boolean);
   const assets = await assetsForBug(context, id);
   const projectSnapshot = projectSnapshotForBug(context, bug);
-  return { bug: { ...mapBug(bug), projectSnapshot, annotationCount: annotations.length, assetCount: assets.length }, annotations, captures, assets, projectSnapshot };
+  const issueSubmission = (await existingSubmissionsForBugs(context, [id])).get(id);
+  return { bug: { ...mapBug(bug), projectSnapshot, annotationCount: annotations.length, assetCount: assets.length, issueSubmission }, annotations, captures, assets, projectSnapshot };
 }
 
 function projectSnapshotForBug(context: ServerContext, bug: Row) {
@@ -337,18 +353,25 @@ async function exportBug(context: ServerContext, id: string) {
     list.push(row);
     groups.set(annotation.captureId, list);
   }
-  for (const [captureId, annotations] of groups.entries()) {
+  const captureIds = new Set(groups.keys());
+  if (detail.bug.primaryCaptureId) captureIds.add(detail.bug.primaryCaptureId);
+  for (const captureId of captureIds) {
+    const annotations = groups.get(captureId) ?? [];
     const capture = first(context.database.db, 'SELECT * FROM captures WHERE id = ?', [captureId]);
     if (!capture) continue;
     const captureDir = join(exportDir, 'captures', captureId);
     const cropDir = join(captureDir, 'crops');
     await mkdir(cropDir, { recursive: true });
-    const png = PNG.sync.read(await readFile(String(capture.screenshot_path)));
-    for (const annotation of annotations) {
-      drawAnnotation(png, annotation);
-      await writeCrop(png, annotation, join(cropDir, `${annotation.id}.png`));
+    if (annotations.length) {
+      const png = PNG.sync.read(await readFile(String(capture.screenshot_path)));
+      for (const annotation of annotations) {
+        drawAnnotation(png, annotation);
+        await writeCrop(png, annotation, join(cropDir, `${annotation.id}.png`));
+      }
+      await writeFile(join(captureDir, 'screenshot.annotated.png'), PNG.sync.write(png));
+    } else {
+      await copyFile(String(capture.screenshot_path), join(captureDir, 'screenshot.png'));
     }
-    await writeFile(join(captureDir, 'screenshot.annotated.png'), PNG.sync.write(png));
     await writeFile(join(captureDir, 'metadata.json'), JSON.stringify(mapCapture(capture), null, 2));
     await writeFile(join(captureDir, 'dom-targets.json'), await readFile(String(capture.dom_targets_path), 'utf8'));
   }
@@ -406,8 +429,9 @@ async function submitIssueDraft(context: ServerContext, bugIds: string[]) {
   const pendingBugIds = bugIds.filter((bugId) => !existing.has(bugId));
   const draft = await writeIssueDraft(context, bugIds);
   const issuesToSubmit = draft.issues.filter((issue) => pendingBugIds.includes(issue.bugId));
+  const issuesToSync = draft.issues.filter((issue) => existing.has(issue.bugId));
   const createdSubmissions = await submitGitLabIssues(issuesToSubmit, config);
-  const reusedSubmissions = [...existing.values()].map((submission) => ({ ...submission, reused: true }));
+  const reusedSubmissions = await syncExistingGitLabIssues(issuesToSync, existing, config);
   const submissions = [...reusedSubmissions, ...createdSubmissions];
   const submittedAt = nowIso();
   const submitPath = join(draft.draftDir, 'submitted.json');
@@ -417,6 +441,7 @@ async function submitIssueDraft(context: ServerContext, bugIds: string[]) {
     submittedAt,
     createdCount: createdSubmissions.length,
     skippedCount: reusedSubmissions.length,
+    syncedCount: reusedSubmissions.filter((submission) => submission.synced).length,
     target: {
       baseUrl: config.baseUrl,
       projectPath: DEFAULT_ISSUE_HUB_PROJECT_PATH
@@ -425,6 +450,77 @@ async function submitIssueDraft(context: ServerContext, bugIds: string[]) {
   };
   await writeFile(submitPath, JSON.stringify({ schema: 'markit.gitlab-issue-submit.v1', ...result }, null, 2));
   return { ...result, submitPath };
+}
+
+async function syncExistingGitLabIssues(issues: IssuePayload[], existing: Map<string, GitLabIssueResult>, config: GitLabConfig): Promise<GitLabIssueResult[]> {
+  const results: GitLabIssueResult[] = [];
+  for (const issue of issues) {
+    const previous = existing.get(issue.bugId);
+    if (!previous) continue;
+    const current = await gitLabRequest<{ id: number; iid: number; web_url?: string; description?: string }>(
+      config,
+      `/api/v4/projects/${encodeURIComponent(previous.projectPath || issue.projectPath)}/issues/${previous.iid}`,
+      { method: 'GET', tolerateNotFound: true }
+    );
+    const currentDescription = current?.description ?? '';
+    const projectPath = previous.projectPath || issue.projectPath;
+    const normalizedDescription = normalizeGitLabUploadLinks(currentDescription, config.baseUrl, projectPath);
+    if (descriptionHasDurableScreenshotEvidence(normalizedDescription)) {
+      if (normalizedDescription !== currentDescription) {
+        await gitLabRequest(
+          config,
+          `/api/v4/projects/${encodeURIComponent(projectPath)}/issues/${previous.iid}`,
+          { method: 'PUT', body: { description: normalizedDescription } }
+        );
+      }
+      results.push({
+        ...previous,
+        id: current?.id ?? previous.id,
+        iid: current?.iid ?? previous.iid,
+        webUrl: current?.web_url ?? previous.webUrl,
+        workItemUrl: `${config.baseUrl}/${projectPath}/-/work_items/${current?.iid ?? previous.iid}`,
+        remoteEvidenceCount: previous.uploadedEvidence?.length || screenshotEvidenceCount(currentDescription),
+        reused: true,
+        synced: normalizedDescription !== currentDescription
+      });
+      continue;
+    }
+    const uploadedEvidence = await uploadIssueEvidence(config, issue);
+    if (!uploadedEvidence.length) {
+      results.push({ ...previous, reused: true, uploadedEvidence: previous.uploadedEvidence ?? [] });
+      continue;
+    }
+    const description = withUploadedEvidence(currentDescription || issue.description, uploadedEvidence);
+    const updated = await gitLabRequest<{ id: number; iid: number; web_url?: string }>(
+      config,
+      `/api/v4/projects/${encodeURIComponent(previous.projectPath || issue.projectPath)}/issues/${previous.iid}`,
+      { method: 'PUT', body: { description } }
+    );
+    results.push({
+      ...previous,
+      id: updated.id,
+      iid: updated.iid,
+      webUrl: updated.web_url ?? previous.webUrl,
+      workItemUrl: `${config.baseUrl}/${previous.projectPath || issue.projectPath}/-/work_items/${updated.iid}`,
+      uploadedEvidence,
+      reused: true,
+      synced: true
+    });
+  }
+  return results;
+}
+
+function descriptionHasDurableScreenshotEvidence(description: string): boolean {
+  return /##\s*Screenshots/i.test(description) && /(?:\/-\/project\/|https?:\/\/[^\s)]+\.(?:png|jpe?g|webp))/i.test(description);
+}
+
+function screenshotEvidenceCount(description: string): number {
+  return (description.match(/!\[[^\]]*]\([^)]+\.(?:png|jpe?g|webp)[^)]*\)/gi) ?? []).length;
+}
+
+function normalizeGitLabUploadLinks(description: string, baseUrl: string, projectPath: string): string {
+  if (!description) return description;
+  return description.replace(/\]\(\/uploads\//g, `](${baseUrl}/${projectPath}/uploads/`);
 }
 
 async function existingSubmissionsForBugs(context: ServerContext, bugIds: string[]): Promise<Map<string, GitLabIssueResult>> {
@@ -537,14 +633,20 @@ async function collectEvidenceFiles(dir: string, files: string[]): Promise<void>
 
 function evidenceFileRank(path: string): number {
   if (path.includes('screenshot.annotated')) return 0;
-  if (path.includes('/crops/')) return 1;
-  if (path.includes('/assets/')) return 2;
-  return 3;
+  if (path.endsWith('screenshot.png')) return 1;
+  if (path.includes('/crops/')) return 2;
+  if (path.includes('/assets/')) return 3;
+  return 4;
 }
 
 function withUploadedEvidence(description: string, uploaded: GitLabUploadResult[]): string {
   if (!uploaded.length) return description;
-  const screenshots = uploaded.map((item) => `- ${basename(item.filePath)}\n\n${item.markdown}`).join('\n\n');
+  const screenshots = uploaded.map((item) => {
+    const fileName = basename(item.filePath);
+    const link = item.assetUrl ?? item.fullPath ?? item.url;
+    const linkedName = link ? `[${fileName}](${link})` : fileName;
+    return `- ${linkedName}\n\n${item.markdown}`;
+  }).join('\n\n');
   return `${description}\n\n## Screenshots\n\n${screenshots}\n`;
 }
 
@@ -562,7 +664,7 @@ async function resolveGitLabUserId(config: GitLabConfig, username: string, cache
   return userId;
 }
 
-async function gitLabRequest<T>(config: GitLabConfig, path: string, options: { method: 'GET' | 'POST'; body?: Record<string, unknown>; tolerateNotFound?: boolean }): Promise<T> {
+async function gitLabRequest<T>(config: GitLabConfig, path: string, options: { method: 'GET' | 'POST' | 'PUT'; body?: Record<string, unknown>; tolerateNotFound?: boolean }): Promise<T> {
   if (config.auth.kind === 'glab') return await gitLabGlabRequest<T>(config, path, options);
   const init: RequestInit = {
     method: options.method,
@@ -598,7 +700,7 @@ async function gitLabUpload(config: GitLabConfig, projectPath: string, filePath:
   }
   const payload = await response.json() as { markdown?: string; url?: string; full_path?: string };
   if (!payload.markdown) throw new MarkitHttpError(502, 'gitlab_upload_failed', 'GitLab upload response did not include markdown.');
-  return uploadResultFromPayload(filePath, payload);
+  return uploadResultFromPayload(config, projectPath, filePath, payload);
 }
 
 function gitLabGlabUpload(config: GitLabConfig, projectPath: string, filePath: string): Promise<GitLabUploadResult> {
@@ -636,7 +738,7 @@ function gitLabGlabUpload(config: GitLabConfig, projectPath: string, filePath: s
           reject(new MarkitHttpError(502, 'gitlab_upload_failed', 'glab upload response did not include markdown.'));
           return;
         }
-        resolve(uploadResultFromPayload(filePath, payload));
+        resolve(uploadResultFromPayload(config, projectPath, filePath, payload));
       } catch (error) {
         reject(new MarkitHttpError(502, 'gitlab_upload_failed', `glab upload returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
       }
@@ -644,17 +746,32 @@ function gitLabGlabUpload(config: GitLabConfig, projectPath: string, filePath: s
   });
 }
 
-function uploadResultFromPayload(filePath: string, payload: { markdown?: string; url?: string; full_path?: string }): GitLabUploadResult {
+function uploadResultFromPayload(config: GitLabConfig, projectPath: string, filePath: string, payload: { markdown?: string; url?: string; full_path?: string }): GitLabUploadResult {
   if (!payload.markdown) throw new MarkitHttpError(502, 'gitlab_upload_failed', 'GitLab upload response did not include markdown.');
+  const assetUrl = absoluteGitLabAssetUrl(config.baseUrl, projectPath, payload.full_path || payload.url || markdownUrlFromUpload(payload.markdown));
+  const alt = basename(filePath, extname(filePath));
   return {
     filePath,
-    markdown: payload.markdown,
+    markdown: assetUrl ? `![${alt}](${assetUrl})` : payload.markdown,
     ...(payload.url ? { url: payload.url } : {}),
-    ...(payload.full_path ? { fullPath: payload.full_path } : {})
+    ...(payload.full_path ? { fullPath: payload.full_path } : {}),
+    ...(assetUrl ? { assetUrl } : {})
   };
 }
 
-function gitLabGlabRequest<T>(config: GitLabConfig, path: string, options: { method: 'GET' | 'POST'; body?: Record<string, unknown>; tolerateNotFound?: boolean }): Promise<T> {
+function markdownUrlFromUpload(markdown: string): string {
+  const match = markdown.match(/\]\(([^)]+)\)/);
+  return match?.[1] ?? '';
+}
+
+function absoluteGitLabAssetUrl(baseUrl: string, projectPath: string, path: string): string {
+  if (!path) return '';
+  if (/^https?:\/\//i.test(path)) return path;
+  if (path.startsWith('/uploads/')) return `${baseUrl}/${projectPath}${path}`;
+  return `${baseUrl}${path.startsWith('/') ? '' : '/'}${path}`;
+}
+
+function gitLabGlabRequest<T>(config: GitLabConfig, path: string, options: { method: 'GET' | 'POST' | 'PUT'; body?: Record<string, unknown>; tolerateNotFound?: boolean }): Promise<T> {
   return new Promise((resolve, reject) => {
     const endpoint = path.replace(/^\/api\/v4\/?/, '');
     const args = ['api', '--hostname', config.hostname, '--method', options.method, endpoint, '--output', 'json'];

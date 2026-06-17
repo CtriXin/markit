@@ -252,6 +252,8 @@ describe('session and capture API', () => {
     });
     expect(issueDraft.issues[0].labels).toContain('unbound-project');
     expect(await readFile(issueDraft.markdownPath, 'utf8')).toContain('- Binding Status: unbound');
+    const primaryScreenshot = await readFile(join(issueDraft.issues[0].exportPath, 'captures', created.capture.id, 'screenshot.png'));
+    expect(primaryScreenshot.length).toBeGreaterThan(0);
   }, 30_000);
 
   it('revives an inactive runtime page before browse actions', async () => {

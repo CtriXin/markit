@@ -966,11 +966,28 @@
   background: rgba(255,255,255,.04);
   font-size: 12px;
 }
+.mk-bulk-status p { flex: 1 0 100%; margin: 0; color: inherit; opacity: .82; }
 .mk-bulk-status strong { font-weight: 900; }
 .mk-bulk-status a { color: #93c5fd; font-weight: 900; text-decoration: none; }
 .mk-bulk-status.is-running { color: #fde68a; background: rgba(245,158,11,.09); }
+.mk-bulk-status.is-running::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(253,230,138,.35);
+  border-top-color: #fde68a;
+  border-radius: 999px;
+  animation: mk-spin .8s linear infinite;
+}
 .mk-bulk-status.is-success { color: #bbf7d0; background: rgba(34,197,94,.09); }
 .mk-bulk-status.is-error { color: #fecaca; background: rgba(239,68,68,.1); }
+.mk-bulk-status.is-stopped { color: #dbeafe; background: rgba(59,130,246,.1); }
+.mk-stop-button {
+  border-color: rgba(248,113,113,.45);
+  color: #fecaca;
+  background: rgba(127,29,29,.32);
+}
+@keyframes mk-spin { to { transform: rotate(360deg); } }
 .mk-card-select {
   display: flex;
   justify-content: flex-end;
@@ -1022,6 +1039,25 @@
 .mk-bug-card small { overflow-wrap: anywhere; }
 .mk-card-actions, .mk-detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .mk-card-actions button, .mk-detail-actions button { min-height: 30px; }
+.mk-issue-pill {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 10px;
+  padding: 7px 8px;
+  background: #191815;
+  color: #a8a29a;
+  font-size: 12px;
+}
+.mk-issue-pill strong { color: #f3f0e8; font-weight: 950; }
+.mk-issue-pill a { color: #93c5fd; font-weight: 950; text-decoration: none; }
+.mk-issue-pill span { color: #8f8880; }
+.mk-issue-pill.is-linked { border-color: rgba(34,197,94,.22); background: rgba(22,101,52,.12); }
+.mk-issue-pill.is-linked span { color: #bbf7d0; }
+.mk-issue-pill.is-empty { border-style: dashed; }
+.mk-issue-pill.is-detail { justify-content: space-between; padding: 10px; }
 .mk-bug-detail { position: sticky; top: 58px; max-height: calc(100dvh - 76px); overflow: auto; }
 .mk-detail-head > div > span { color: #8f8880; font-size: 12px; font-weight: 900; }
 .mk-detail-evidence { display: grid; gap: 8px; }

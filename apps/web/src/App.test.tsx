@@ -38,6 +38,9 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('draftGitLabIssues');
     expect(source).toContain('submitGitLabIssues');
     expect(source).toContain('bulk-action-status');
+    expect(source).toContain('停止等待');
+    expect(source).toContain('IssueStatusPill');
+    expect(source).toContain('截图资源');
     expect(source).not.toMatch(/ChatComposer|project\/run/i);
   });
 });

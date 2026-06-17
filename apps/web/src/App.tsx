@@ -18,10 +18,10 @@ type BugReference = { kind: 'requirement' | 'design' | 'compare' | 'other'; url:
 type BugAsset = { id: string; bugId: string; kind: string; fileName: string; mimeType: string; sizeBytes: number; label?: string; createdAt: string };
 type DraftAsset = { id: string; kind: 'pasted-screenshot' | 'uploaded-screenshot'; fileName: string; mimeType: string; sizeBytes: number; dataUrl: string; label: string };
 type QuickComment = { annotationId: string; captureId: string; rect: Rect; text: string };
-type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; projectSnapshot?: ProjectSnapshot; annotationCount?: number; assetCount?: number; exportPath?: string; createdAt?: string; updatedAt?: string };
+type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; projectSnapshot?: ProjectSnapshot; annotationCount?: number; assetCount?: number; exportPath?: string; issueSubmission?: IssueSubmission; createdAt?: string; updatedAt?: string };
 type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; assets: BugAsset[]; projectSnapshot?: ProjectSnapshot };
-type IssueSubmission = { bugId: string; title: string; workItemUrl: string; webUrl: string; reused?: boolean; uploadedEvidence?: Array<{ filePath: string; markdown: string }> };
-type IssueSubmitResponse = { count: number; createdCount?: number; skippedCount?: number; submissions: IssueSubmission[]; submitPath: string };
+type IssueSubmission = { bugId: string; title: string; projectPath?: string; iid?: number; id?: number; workItemUrl: string; webUrl: string; reused?: boolean; synced?: boolean; remoteEvidenceCount?: number; uploadedEvidence?: Array<{ filePath: string; markdown: string; assetUrl?: string }> };
+type IssueSubmitResponse = { count: number; createdCount?: number; skippedCount?: number; syncedCount?: number; submissions: IssueSubmission[]; submitPath: string };
 type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
 type CatalogStatus = { schema: 'markit.catalog.status.v1'; enabled: boolean; root: string; reason?: string; generatedAt?: string; projectCount?: number; domainCount?: number; source?: { pendingAssociations?: number }; integration?: { syncPolicy?: string } };
 type CatalogProject = { id: string; name: string; status: string; aliases: string[]; domainCount: number; activeDomainCount: number; pendingDomainCount: number; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; labels?: string[]; testing?: { enabled: boolean; defaultViewport: string; viewports: string[] }; confidence?: number };
@@ -695,16 +695,22 @@ export function App() {
     return body;
   }
 
-  async function submitGitLabIssues(bugIds: string[]) {
+  async function submitGitLabIssues(bugIds: string[], signal?: AbortSignal) {
     if (!bugIds.length) return { count: 0, submissions: [], submitPath: '' };
     try {
-      const body = await api<IssueSubmitResponse>('/api/bugs/issue-submit', { method: 'POST', body: JSON.stringify({ bugIds }) });
+      const init: RequestInit = { method: 'POST', body: JSON.stringify({ bugIds }) };
+      if (signal) init.signal = signal;
+      const body = await api<IssueSubmitResponse>('/api/bugs/issue-submit', init);
       const firstUrl = body.submissions[0]?.workItemUrl ?? body.submissions[0]?.webUrl ?? body.submitPath;
       setMessage(`已真实创建 ${body.createdCount ?? body.count} 个 ptc-wiki GitLab Issue：${firstUrl}`);
       await refreshBugs();
       if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
       return body;
     } catch (error) {
+      if (isAbortError(error)) {
+        setMessage('已停止等待 GitLab 挂载结果；如果后台已经开始提交，刷新后会回填状态。');
+        throw error;
+      }
       setMessage(`真实挂 Issue 失败：${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
@@ -1856,13 +1862,14 @@ type BugProjectGroup = {
   bound: boolean;
 };
 
-type BulkActionState = { status: 'idle' | 'running' | 'success' | 'error'; text: string; links?: Array<{ label: string; href: string }> };
+type BulkActionState = { status: 'idle' | 'running' | 'success' | 'error' | 'stopped'; action?: 'export' | 'draft' | 'submit'; text: string; detail?: string; links?: Array<{ label: string; href: string }> };
 
-function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; bulkExportBugs: (ids: string[]) => Promise<{ count: number; exports: Array<{ bugId: string; exportPath: string }> }>; draftGitLabIssues: (ids: string[]) => Promise<{ count: number; markdownPath: string }>; submitGitLabIssues: (ids: string[]) => Promise<IssueSubmitResponse>; deleteBug: (id: string) => Promise<void> }) {
+function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; bulkExportBugs: (ids: string[]) => Promise<{ count: number; exports: Array<{ bugId: string; exportPath: string }> }>; draftGitLabIssues: (ids: string[]) => Promise<{ count: number; markdownPath: string }>; submitGitLabIssues: (ids: string[], signal?: AbortSignal) => Promise<IssueSubmitResponse>; deleteBug: (id: string) => Promise<void> }) {
   const groups = useMemo(() => groupBugsByProject(props.bugs), [props.bugs]);
   const [selectedProjectKey, setSelectedProjectKey] = useState('');
   const [selectedBugIds, setSelectedBugIds] = useState<string[]>([]);
   const [bulkAction, setBulkAction] = useState<BulkActionState>({ status: 'idle', text: '' });
+  const submitAbortRef = useRef<AbortController | null>(null);
   const selectedBug = props.bugs.find((bug) => bug.id === props.selectedBugId);
 
   useEffect(() => {
@@ -1902,38 +1909,56 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
 
   const runBulkExport = async () => {
     if (!selectedForAction.length || actionRunning) return;
-    setBulkAction({ status: 'running', text: `正在批量导出 ${selectedForAction.length} 个 Bug...` });
+    setBulkAction({ status: 'running', action: 'export', text: `正在批量导出 ${selectedForAction.length} 个 Bug...`, detail: '状态：导出中' });
     try {
       const result = await props.bulkExportBugs(selectedForAction);
-      setBulkAction({ status: 'success', text: `已完成：导出 ${result.count} 个 Bug。` });
+      setBulkAction({ status: 'success', action: 'export', text: `已完成：导出 ${result.count} 个 Bug。`, detail: '状态：完成' });
     } catch (error) {
-      setBulkAction({ status: 'error', text: `已停止：${error instanceof Error ? error.message : String(error)}` });
+      setBulkAction({ status: 'error', action: 'export', text: `已停止：${error instanceof Error ? error.message : String(error)}`, detail: '状态：失败停止' });
     }
   };
 
   const runIssueDraft = async () => {
     if (!selectedForAction.length || actionRunning) return;
-    setBulkAction({ status: 'running', text: `正在生成 ${selectedForAction.length} 个 Wiki Issue 草稿...` });
+    setBulkAction({ status: 'running', action: 'draft', text: `正在生成 ${selectedForAction.length} 个 Wiki Issue 草稿...`, detail: '状态：生成草稿中' });
     try {
       const result = await props.draftGitLabIssues(selectedForAction);
-      setBulkAction({ status: 'success', text: `已完成：生成 ${result.count} 个草稿：${result.markdownPath}` });
+      setBulkAction({ status: 'success', action: 'draft', text: `已完成：生成 ${result.count} 个草稿：${result.markdownPath}`, detail: '状态：完成' });
     } catch (error) {
-      setBulkAction({ status: 'error', text: `已停止：${error instanceof Error ? error.message : String(error)}` });
+      setBulkAction({ status: 'error', action: 'draft', text: `已停止：${error instanceof Error ? error.message : String(error)}`, detail: '状态：失败停止' });
     }
   };
 
   const runIssueSubmit = async () => {
     if (!selectedForAction.length || actionRunning) return;
-    setBulkAction({ status: 'running', text: `正在上传截图并真实挂载 ${selectedForAction.length} 个 Wiki Issue，请勿重复点击...` });
+    const controller = new AbortController();
+    submitAbortRef.current = controller;
+    setBulkAction({ status: 'running', action: 'submit', text: `正在上传截图并真实挂载 ${selectedForAction.length} 个 Wiki Issue...`, detail: '状态：loading；步骤：导出 evidence -> 上传截图资源 -> 创建/同步 Work Item' });
     try {
-      const result = await props.submitGitLabIssues(selectedForAction);
+      const result = await props.submitGitLabIssues(selectedForAction, controller.signal);
       const created = result.createdCount ?? result.count;
       const skipped = result.skippedCount ?? result.submissions.filter((item) => item.reused).length;
-      const links = result.submissions.slice(0, 4).map((item, index) => ({ label: item.reused ? `已存在 #${index + 1}` : `打开 #${index + 1}`, href: item.workItemUrl || item.webUrl }));
-      setBulkAction({ status: 'success', text: `已完成：新建 ${created} 个，跳过已存在 ${skipped} 个。`, links });
+      const synced = result.syncedCount ?? result.submissions.filter((item) => item.synced).length;
+      const evidenceCount = result.submissions.reduce((total, item) => total + issueEvidenceCount(item), 0);
+      const links = result.submissions.slice(0, 4).map((item, index) => {
+        const number = item.iid ? `#${item.iid}` : `#${index + 1}`;
+        return { label: item.synced ? `已补图 ${number}` : item.reused ? `已存在 ${number}` : `打开 ${number}`, href: item.workItemUrl || item.webUrl };
+      });
+      setBulkAction({ status: 'success', action: 'submit', text: `已完成：新建 ${created} 个，已存在 ${skipped} 个，同步补图 ${synced} 个，截图资源 ${evidenceCount} 张。`, detail: '状态：完成；可点链接打开 GitLab Work Item 检查图片。', links });
     } catch (error) {
-      setBulkAction({ status: 'error', text: `已停止：${error instanceof Error ? error.message : String(error)}` });
+      if (isAbortError(error)) {
+        setBulkAction({ status: 'stopped', action: 'submit', text: '已停止等待：本次前端等待已取消。', detail: '状态：停止；如果后台已开始提交，稍后刷新 Bug 列表会回填 GitLab 状态，避免立刻重复点击。' });
+      } else {
+        setBulkAction({ status: 'error', action: 'submit', text: `已停止：${error instanceof Error ? error.message : String(error)}`, detail: '状态：失败停止；没有确认成功前不要重复批量点击。' });
+      }
+    } finally {
+      submitAbortRef.current = null;
     }
+  };
+
+  const stopIssueSubmit = () => {
+    submitAbortRef.current?.abort();
+    setBulkAction({ status: 'stopped', action: 'submit', text: '已停止等待：正在取消本次前端请求。', detail: '状态：停止中；如果 GitLab 后台已经收到请求，完成后会通过刷新状态回填。' });
   };
 
   return (
@@ -1972,7 +1997,14 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
             <button data-testid="bulk-export" disabled={!selectedForAction.length || actionRunning} onClick={() => void runBulkExport()}>批量导出</button>
             <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueDraft()}>挂到 Wiki Issue 草稿</button>
             <button data-testid="bulk-issue-submit" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueSubmit()}>{actionRunning ? '处理中...' : '真实挂 Wiki Issue'}</button>
-            {bulkAction.status !== 'idle' ? <div className={`mk-bulk-status is-${bulkAction.status}`} data-testid="bulk-action-status"><strong>{bulkAction.text}</strong>{bulkAction.links?.map((link) => <a key={link.href} href={link.href} target="_blank" rel="noreferrer">{link.label}</a>)}</div> : null}
+            {bulkAction.status !== 'idle' ? (
+              <div className={`mk-bulk-status is-${bulkAction.status}`} data-testid="bulk-action-status" role="status" aria-live="polite">
+                <strong>{bulkAction.text}</strong>
+                {bulkAction.detail ? <p>{bulkAction.detail}</p> : null}
+                {actionRunning && bulkAction.action === 'submit' ? <button className="mk-stop-button" data-testid="bulk-stop-submit" onClick={stopIssueSubmit}>停止等待</button> : null}
+                {bulkAction.links?.map((link) => <a key={link.href} href={link.href} target="_blank" rel="noreferrer">{link.label}</a>)}
+              </div>
+            ) : null}
           </div>
           <div className="mk-bug-list-stack">
             {visibleBugs.map((bug) => (
@@ -1986,6 +2018,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
                 <span data-testid="bug-annotation-count">{bug.annotationCount ?? 0} 条标注</span>
                 {bug.assetCount ? <span className="mk-reference-count">{bug.assetCount} 张截图</span> : null}
                 {bug.references?.length ? <span className="mk-reference-count">{bug.references.length} 个引用</span> : null}
+                <IssueStatusPill submission={bug.issueSubmission} />
                 <div className="mk-card-actions">
                   <button data-testid="export-evidence" onClick={(event) => { event.stopPropagation(); props.exportBug(bug.id); }}>导出证据</button>
                   <button className="mk-danger-button" data-testid="delete-bug" onClick={(event) => { event.stopPropagation(); void props.deleteBug(bug.id); }}>删除</button>
@@ -2000,6 +2033,26 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
       </div>
     </section>
   );
+}
+
+function IssueStatusPill({ submission, detail = false }: { submission: IssueSubmission | undefined; detail?: boolean }) {
+  if (!submission) {
+    return <div className={detail ? 'mk-issue-pill is-empty is-detail' : 'mk-issue-pill is-empty'} data-testid="bug-issue-status"><strong>Wiki Issue</strong><span>未挂载</span></div>;
+  }
+  const href = submission.workItemUrl || submission.webUrl;
+  const evidenceCount = issueEvidenceCount(submission);
+  const status = submission.synced ? '已补图' : submission.reused ? '已存在' : '已挂载';
+  return (
+    <div className={detail ? 'mk-issue-pill is-linked is-detail' : 'mk-issue-pill is-linked'} data-testid="bug-issue-status">
+      <strong>Wiki Issue</strong>
+      <a href={href} target="_blank" rel="noreferrer">{status}{submission.iid ? ` #${submission.iid}` : ''}</a>
+      <span>{evidenceCount ? `截图资源 ${evidenceCount} 张` : '等待截图同步'}</span>
+    </div>
+  );
+}
+
+function issueEvidenceCount(submission: IssueSubmission): number {
+  return submission.uploadedEvidence?.length || submission.remoteEvidenceCount || 0;
 }
 
 function groupBugsByProject(bugs: Bug[]): BugProjectGroup[] {
@@ -2042,6 +2095,7 @@ function BugDetailPanel({ detail, patchBug, exportBug, deleteBug }: { detail: Bu
         </div>
       </div>
       <ProjectContextCard snapshot={detail.bug.projectSnapshot ?? detail.projectSnapshot} fallbackHost={safeHost(detail.bug.finalUrl)} />
+      <IssueStatusPill submission={detail.bug.issueSubmission} detail />
       <div className="mk-two-col">
         <label>优先级<select value={edit.severity} onChange={(event) => setEdit((current) => current ? { ...current, severity: event.currentTarget.value } : current)}><option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></label>
         <label>状态<select value={edit.status} onChange={(event) => setEdit((current) => current ? { ...current, status: event.currentTarget.value } : current)}>{statusOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
@@ -2084,6 +2138,10 @@ async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
   const body = text ? JSON.parse(text) : undefined;
   if (!response.ok) throw new Error(body?.error?.message || `${response.status} ${response.statusText}`);
   return body as T;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
 }
 
 function completeDraft(draft: DraftBug, target?: DomTarget, evidenceText = ''): DraftBug {
