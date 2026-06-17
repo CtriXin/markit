@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { basename, extname, join } from 'node:path';
 import { PNG } from 'pngjs';
 import { Router } from 'express';
 import type { ServerContext } from '../context.js';
@@ -13,6 +13,7 @@ const maxAssetBytes = 8 * 1024 * 1024;
 const allowedAssetTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const DEFAULT_ISSUE_HUB_PROJECT_PATH = 'ptc/fe/ptc-wiki';
 const DEFAULT_GITLAB_BASE_URL = 'https://gitlab.adsconflux.xyz';
+const gitLabUploadLimit = 20;
 
 type IssueProjectSnapshot = {
   project?: {
@@ -53,6 +54,20 @@ type GitLabIssueResult = {
   assignee: string;
   assigneeResolved: boolean;
   labels: string[];
+  uploadedEvidence: GitLabUploadResult[];
+  reused?: boolean;
+};
+
+type GitLabUploadResult = {
+  filePath: string;
+  markdown: string;
+  url?: string;
+  fullPath?: string;
+};
+
+type DirectoryEntry = {
+  name: string;
+  isDirectory(): boolean;
 };
 
 export function bugsRouter(context: ServerContext): Router {
@@ -302,6 +317,13 @@ function extensionForMime(mimeType: string, fileName = ''): string {
   return '.png';
 }
 
+function mimeTypeForFile(filePath: string): string {
+  const extension = extname(filePath).toLowerCase();
+  if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg';
+  if (extension === '.webp') return 'image/webp';
+  return 'image/png';
+}
+
 async function exportBug(context: ServerContext, id: string) {
   const detail = await bugDetail(context, id);
   const exportDir = join(context.dataDir, 'exports', id);
@@ -380,14 +402,21 @@ async function writeIssueDraft(context: ServerContext, bugIds: string[]) {
 
 async function submitIssueDraft(context: ServerContext, bugIds: string[]) {
   const config = gitLabConfigFromEnv(process.env);
+  const existing = await existingSubmissionsForBugs(context, bugIds);
+  const pendingBugIds = bugIds.filter((bugId) => !existing.has(bugId));
   const draft = await writeIssueDraft(context, bugIds);
-  const submissions = await submitGitLabIssues(draft.issues, config);
+  const issuesToSubmit = draft.issues.filter((issue) => pendingBugIds.includes(issue.bugId));
+  const createdSubmissions = await submitGitLabIssues(issuesToSubmit, config);
+  const reusedSubmissions = [...existing.values()].map((submission) => ({ ...submission, reused: true }));
+  const submissions = [...reusedSubmissions, ...createdSubmissions];
   const submittedAt = nowIso();
   const submitPath = join(draft.draftDir, 'submitted.json');
   const result = {
     ...draft,
     mode: 'submit',
     submittedAt,
+    createdCount: createdSubmissions.length,
+    skippedCount: reusedSubmissions.length,
     target: {
       baseUrl: config.baseUrl,
       projectPath: DEFAULT_ISSUE_HUB_PROJECT_PATH
@@ -396,6 +425,31 @@ async function submitIssueDraft(context: ServerContext, bugIds: string[]) {
   };
   await writeFile(submitPath, JSON.stringify({ schema: 'markit.gitlab-issue-submit.v1', ...result }, null, 2));
   return { ...result, submitPath };
+}
+
+async function existingSubmissionsForBugs(context: ServerContext, bugIds: string[]): Promise<Map<string, GitLabIssueResult>> {
+  const wanted = new Set(bugIds);
+  const submissions = new Map<string, GitLabIssueResult>();
+  const draftsDir = join(context.dataDir, 'issue-drafts');
+  let entries: DirectoryEntry[];
+  try {
+    entries = await readdir(draftsDir, { withFileTypes: true });
+  } catch {
+    return submissions;
+  }
+  const dirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  for (const dir of dirs) {
+    const path = join(draftsDir, dir, 'submitted.json');
+    try {
+      const payload = parseJson<{ submissions?: GitLabIssueResult[] }>(await readFile(path, 'utf8'), {});
+      for (const submission of payload.submissions ?? []) {
+        if (wanted.has(submission.bugId)) submissions.set(submission.bugId, { ...submission, uploadedEvidence: submission.uploadedEvidence ?? [] });
+      }
+    } catch {
+      // Ignore partial or legacy draft folders.
+    }
+  }
+  return submissions;
 }
 
 function gitLabConfigFromEnv(env: NodeJS.ProcessEnv): GitLabConfig {
@@ -415,9 +469,11 @@ async function submitGitLabIssues(issues: IssuePayload[], config: GitLabConfig):
   const results: GitLabIssueResult[] = [];
   for (const issue of issues) {
     const assigneeId = issue.assignee ? await resolveGitLabUserId(config, issue.assignee, assigneeCache) : undefined;
+    const uploadedEvidence = await uploadIssueEvidence(config, issue);
+    const description = withUploadedEvidence(issue.description, uploadedEvidence);
     const body: Record<string, unknown> = {
       title: issue.title,
-      description: issue.description,
+      description,
       labels: issue.labels.join(',')
     };
     if (assigneeId) body.assignee_ids = [assigneeId];
@@ -437,10 +493,59 @@ async function submitGitLabIssues(issues: IssuePayload[], config: GitLabConfig):
       workItemUrl: `${config.baseUrl}/${issue.projectPath}/-/work_items/${created.iid}`,
       assignee: issue.assignee,
       assigneeResolved: Boolean(assigneeId),
-      labels: issue.labels
+      labels: issue.labels,
+      uploadedEvidence
     });
   }
   return results;
+}
+
+async function uploadIssueEvidence(config: GitLabConfig, issue: IssuePayload): Promise<GitLabUploadResult[]> {
+  const files = await evidenceFilesForIssue(issue.exportPath);
+  const uploaded: GitLabUploadResult[] = [];
+  for (const filePath of files) {
+    uploaded.push(await gitLabUpload(config, issue.projectPath, filePath));
+  }
+  return uploaded;
+}
+
+async function evidenceFilesForIssue(exportPath: string): Promise<string[]> {
+  if (!exportPath) return [];
+  const files: string[] = [];
+  await collectEvidenceFiles(exportPath, files);
+  const preferred = files.sort((a, b) => evidenceFileRank(a) - evidenceFileRank(b) || a.localeCompare(b));
+  return preferred.slice(0, gitLabUploadLimit);
+}
+
+async function collectEvidenceFiles(dir: string, files: string[]): Promise<void> {
+  let entries: DirectoryEntry[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await collectEvidenceFiles(path, files);
+      continue;
+    }
+    const extension = extname(entry.name).toLowerCase();
+    if (['.png', '.jpg', '.jpeg', '.webp'].includes(extension)) files.push(path);
+  }
+}
+
+function evidenceFileRank(path: string): number {
+  if (path.includes('screenshot.annotated')) return 0;
+  if (path.includes('/crops/')) return 1;
+  if (path.includes('/assets/')) return 2;
+  return 3;
+}
+
+function withUploadedEvidence(description: string, uploaded: GitLabUploadResult[]): string {
+  if (!uploaded.length) return description;
+  const screenshots = uploaded.map((item) => `- ${basename(item.filePath)}\n\n${item.markdown}`).join('\n\n');
+  return `${description}\n\n## Screenshots\n\n${screenshots}\n`;
 }
 
 async function resolveGitLabUserId(config: GitLabConfig, username: string, cache: Map<string, number | undefined>): Promise<number | undefined> {
@@ -475,6 +580,78 @@ async function gitLabRequest<T>(config: GitLabConfig, path: string, options: { m
     throw new MarkitHttpError(response.status === 401 || response.status === 403 ? 424 : 502, 'gitlab_submit_failed', message);
   }
   return await response.json() as T;
+}
+
+async function gitLabUpload(config: GitLabConfig, projectPath: string, filePath: string): Promise<GitLabUploadResult> {
+  if (config.auth.kind === 'glab') return await gitLabGlabUpload(config, projectPath, filePath);
+  const form = new FormData();
+  const file = await readFile(filePath);
+  form.append('file', new Blob([file], { type: mimeTypeForFile(filePath) }), basename(filePath));
+  const response = await fetch(`${config.baseUrl}/api/v4/projects/${encodeURIComponent(projectPath)}/uploads`, {
+    method: 'POST',
+    headers: { 'private-token': config.auth.token },
+    body: form
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new MarkitHttpError(502, 'gitlab_upload_failed', detail ? `GitLab upload failed: ${response.status} ${detail.slice(0, 240)}` : `GitLab upload failed: ${response.status} ${response.statusText}`);
+  }
+  const payload = await response.json() as { markdown?: string; url?: string; full_path?: string };
+  if (!payload.markdown) throw new MarkitHttpError(502, 'gitlab_upload_failed', 'GitLab upload response did not include markdown.');
+  return uploadResultFromPayload(filePath, payload);
+}
+
+function gitLabGlabUpload(config: GitLabConfig, projectPath: string, filePath: string): Promise<GitLabUploadResult> {
+  return new Promise((resolve, reject) => {
+    const endpoint = `projects/${encodeURIComponent(projectPath)}/uploads`;
+    const args = ['api', '--hostname', config.hostname, '--method', 'POST', endpoint, '--output', 'json', '--form', `file=@${filePath}`];
+    const child = spawn('glab', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new MarkitHttpError(504, 'gitlab_upload_failed', 'glab api timed out while uploading GitLab evidence.'));
+    }, 60_000);
+    child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
+    child.on('error', (error: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      if (error.code === 'ENOENT') {
+        reject(new MarkitHttpError(424, 'gitlab_auth_missing', 'glab CLI not found. Install glab or set MARKIT_GITLAB_TOKEN.'));
+        return;
+      }
+      reject(new MarkitHttpError(502, 'gitlab_upload_failed', `glab upload failed: ${error.message}`));
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const output = Buffer.concat(stdout).toString('utf8');
+      const errorOutput = Buffer.concat(stderr).toString('utf8');
+      if (code !== 0) {
+        reject(glabErrorMessage(config.hostname, errorOutput || output, 'gitlab_upload_failed'));
+        return;
+      }
+      try {
+        const payload = output ? JSON.parse(output) as { markdown?: string; url?: string; full_path?: string } : {};
+        if (!payload.markdown) {
+          reject(new MarkitHttpError(502, 'gitlab_upload_failed', 'glab upload response did not include markdown.'));
+          return;
+        }
+        resolve(uploadResultFromPayload(filePath, payload));
+      } catch (error) {
+        reject(new MarkitHttpError(502, 'gitlab_upload_failed', `glab upload returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    });
+  });
+}
+
+function uploadResultFromPayload(filePath: string, payload: { markdown?: string; url?: string; full_path?: string }): GitLabUploadResult {
+  if (!payload.markdown) throw new MarkitHttpError(502, 'gitlab_upload_failed', 'GitLab upload response did not include markdown.');
+  return {
+    filePath,
+    markdown: payload.markdown,
+    ...(payload.url ? { url: payload.url } : {}),
+    ...(payload.full_path ? { fullPath: payload.full_path } : {})
+  };
 }
 
 function gitLabGlabRequest<T>(config: GitLabConfig, path: string, options: { method: 'GET' | 'POST'; body?: Record<string, unknown>; tolerateNotFound?: boolean }): Promise<T> {
@@ -519,12 +696,12 @@ function gitLabGlabRequest<T>(config: GitLabConfig, path: string, options: { met
   });
 }
 
-function glabErrorMessage(hostname: string, output: string): MarkitHttpError {
+function glabErrorMessage(hostname: string, output: string, code = 'gitlab_submit_failed'): MarkitHttpError {
   const normalized = output.toLowerCase();
   if (normalized.includes('not been authenticated') || normalized.includes('not authenticated') || normalized.includes('auth login')) {
     return new MarkitHttpError(424, 'gitlab_auth_missing', `glab is not authenticated for ${hostname}. Run: glab auth login --hostname ${hostname}`);
   }
-  return new MarkitHttpError(502, 'gitlab_submit_failed', `glab api failed: ${output.trim().slice(0, 240) || 'unknown error'}`);
+  return new MarkitHttpError(502, code, `glab api failed: ${output.trim().slice(0, 240) || 'unknown error'}`);
 }
 
 function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, markdown: string) {
