@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { PNG } from 'pngjs';
@@ -37,7 +38,8 @@ type IssuePayload = ReturnType<typeof issuePayloadFromDetail>;
 
 type GitLabConfig = {
   baseUrl: string;
-  token: string;
+  hostname: string;
+  auth: { kind: 'token'; token: string } | { kind: 'glab' };
 };
 
 type GitLabIssueResult = {
@@ -398,11 +400,14 @@ async function submitIssueDraft(context: ServerContext, bugIds: string[]) {
 
 function gitLabConfigFromEnv(env: NodeJS.ProcessEnv): GitLabConfig {
   const baseUrl = String(env.MARKIT_GITLAB_BASE_URL || DEFAULT_GITLAB_BASE_URL).replace(/\/+$/, '');
+  const hostname = safeHostname(baseUrl);
+  const authMode = String(env.MARKIT_GITLAB_AUTH || 'auto').toLowerCase();
   const token = firstNonEmpty(env.MARKIT_GITLAB_TOKEN, env.GITLAB_TOKEN, env.GLAB_TOKEN);
-  if (!token) {
-    throw new MarkitHttpError(424, 'gitlab_auth_missing', 'Missing GitLab token. Set MARKIT_GITLAB_TOKEN for gitlab.adsconflux.xyz, then restart Markit.');
+  if (token && authMode !== 'glab') return { baseUrl, hostname, auth: { kind: 'token', token } };
+  if (authMode === 'token') {
+    throw new MarkitHttpError(424, 'gitlab_auth_missing', 'Missing GitLab token. Set MARKIT_GITLAB_TOKEN, or use MARKIT_GITLAB_AUTH=auto with glab auth login.');
   }
-  return { baseUrl, token };
+  return { baseUrl, hostname, auth: { kind: 'glab' } };
 }
 
 async function submitGitLabIssues(issues: IssuePayload[], config: GitLabConfig): Promise<GitLabIssueResult[]> {
@@ -453,11 +458,12 @@ async function resolveGitLabUserId(config: GitLabConfig, username: string, cache
 }
 
 async function gitLabRequest<T>(config: GitLabConfig, path: string, options: { method: 'GET' | 'POST'; body?: Record<string, unknown>; tolerateNotFound?: boolean }): Promise<T> {
+  if (config.auth.kind === 'glab') return await gitLabGlabRequest<T>(config, path, options);
   const init: RequestInit = {
     method: options.method,
     headers: {
       'content-type': 'application/json',
-      'private-token': config.token
+      'private-token': config.auth.token
     }
   };
   if (options.body) init.body = JSON.stringify(options.body);
@@ -469,6 +475,56 @@ async function gitLabRequest<T>(config: GitLabConfig, path: string, options: { m
     throw new MarkitHttpError(response.status === 401 || response.status === 403 ? 424 : 502, 'gitlab_submit_failed', message);
   }
   return await response.json() as T;
+}
+
+function gitLabGlabRequest<T>(config: GitLabConfig, path: string, options: { method: 'GET' | 'POST'; body?: Record<string, unknown>; tolerateNotFound?: boolean }): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const endpoint = path.replace(/^\/api\/v4\/?/, '');
+    const args = ['api', '--hostname', config.hostname, '--method', options.method, endpoint, '--output', 'json'];
+    if (options.body) args.push('--input', '-');
+    const child = spawn('glab', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new MarkitHttpError(504, 'gitlab_submit_failed', 'glab api timed out while submitting GitLab Issue.'));
+    }, 60_000);
+    child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)));
+    child.stderr.on('data', (chunk) => stderr.push(Buffer.from(chunk)));
+    child.on('error', (error: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      if (error.code === 'ENOENT') {
+        reject(new MarkitHttpError(424, 'gitlab_auth_missing', 'glab CLI not found. Install glab or set MARKIT_GITLAB_TOKEN.'));
+        return;
+      }
+      reject(new MarkitHttpError(502, 'gitlab_submit_failed', `glab api failed: ${error.message}`));
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const output = Buffer.concat(stdout).toString('utf8');
+      const errorOutput = Buffer.concat(stderr).toString('utf8');
+      if (code !== 0) {
+        const message = glabErrorMessage(config.hostname, errorOutput || output);
+        reject(message);
+        return;
+      }
+      try {
+        resolve(output ? JSON.parse(output) as T : {} as T);
+      } catch (error) {
+        reject(new MarkitHttpError(502, 'gitlab_submit_failed', `glab api returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    });
+    if (options.body) child.stdin.end(JSON.stringify(options.body));
+    else child.stdin.end();
+  });
+}
+
+function glabErrorMessage(hostname: string, output: string): MarkitHttpError {
+  const normalized = output.toLowerCase();
+  if (normalized.includes('not been authenticated') || normalized.includes('not authenticated') || normalized.includes('auth login')) {
+    return new MarkitHttpError(424, 'gitlab_auth_missing', `glab is not authenticated for ${hostname}. Run: glab auth login --hostname ${hostname}`);
+  }
+  return new MarkitHttpError(502, 'gitlab_submit_failed', `glab api failed: ${output.trim().slice(0, 240) || 'unknown error'}`);
 }
 
 function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, markdown: string) {
@@ -544,6 +600,14 @@ function safeHost(value: string): string {
     return new URL(value).host;
   } catch {
     return value;
+  }
+}
+
+function safeHostname(value: string): string {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return value.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   }
 }
 

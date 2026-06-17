@@ -179,10 +179,12 @@ describe('session and capture API', () => {
     expect(issueMarkdown).toContain('- Issue Hub: ptc/fe/ptc-wiki');
     expect(issueMarkdown).toContain('- Business Repo: ptc/fe/demo');
     const previousGitLab = {
+      auth: process.env.MARKIT_GITLAB_AUTH,
       markit: process.env.MARKIT_GITLAB_TOKEN,
       generic: process.env.GITLAB_TOKEN,
       glab: process.env.GLAB_TOKEN
     };
+    process.env.MARKIT_GITLAB_AUTH = 'token';
     delete process.env.MARKIT_GITLAB_TOKEN;
     delete process.env.GITLAB_TOKEN;
     delete process.env.GLAB_TOKEN;
@@ -195,6 +197,7 @@ describe('session and capture API', () => {
       expect(submitResponse.status).toBe(424);
       expect(await submitResponse.json()).toMatchObject({ error: { code: 'gitlab_auth_missing' } });
     } finally {
+      restoreEnv('MARKIT_GITLAB_AUTH', previousGitLab.auth);
       restoreEnv('MARKIT_GITLAB_TOKEN', previousGitLab.markit);
       restoreEnv('GITLAB_TOKEN', previousGitLab.generic);
       restoreEnv('GLAB_TOKEN', previousGitLab.glab);
