@@ -40,7 +40,7 @@ describe('project catalog API', () => {
 
   it('exposes catalog status, searchable projects, project domains, and URL resolution', async () => {
     const status = await fetch(`${baseUrl}/api/catalog/status`).then((response) => response.json());
-    expect(status).toMatchObject({ enabled: true, projectCount: 1, domainCount: 1 });
+    expect(status).toMatchObject({ enabled: true, projectCount: 2, domainCount: 1 });
 
     const projects = await fetch(`${baseUrl}/api/catalog/projects?query=demo`).then((response) => response.json());
     expect(projects.projects).toHaveLength(1);
@@ -48,8 +48,10 @@ describe('project catalog API', () => {
       id: 'demo-project',
       name: 'Demo Project',
       scmpService: 'ptc-demo',
-      activeBranch: 'release-1.2.3'
+      activeBranch: 'release-1.2.3',
+      domainCount: 1
     });
+    expect(projects.projects.some((project: { id: string }) => project.id === 'empty-project')).toBe(false);
 
     const domains = await fetch(`${baseUrl}/api/catalog/domains?projectId=demo-project`).then((response) => response.json());
     expect(domains.domains).toEqual([
@@ -99,9 +101,9 @@ async function writeFixtureCatalog(root: string) {
   await writeFile(join(root, 'catalog', 'catalog.manifest.json'), JSON.stringify({
     schema: 'ptc.catalog.v1',
     generatedAt: '2026-06-17T00:00:00.000Z',
-    projectCount: 1,
+    projectCount: 2,
     domainCount: 1,
-    projects: ['projects/demo-project.json'],
+    projects: ['projects/demo-project.json', 'projects/empty-project.json'],
     domainIndex: 'domains.json',
     source: { kind: 'fixture', generatedAt: '2026-06-17T00:00:00.000Z', pendingAssociations: 0 }
   }));
@@ -135,5 +137,17 @@ async function writeFixtureCatalog(root: string) {
     owners: { qa: ['xin'], dev: ['dev1'] },
     sources: [{ kind: 'fixture', path: 'fixture' }],
     confidence: 0.99
+  }));
+  await writeFile(join(root, 'catalog', 'projects', 'empty-project.json'), JSON.stringify({
+    schema: 'ptc.project.v1',
+    id: 'empty-project',
+    name: 'Empty Project',
+    aliases: ['demo empty'],
+    status: 'active',
+    repo: { gitlabPath: 'ptc/fe/empty', activeBranch: 'main' },
+    domains: [],
+    gitlab: { issueProjectPath: 'ptc/fe/empty', labels: ['markit', 'bug'] },
+    testing: { enabled: true, defaultViewport: 'desktop-1440', viewports: ['desktop-1440'] },
+    confidence: 0.2
   }));
 }
