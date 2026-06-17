@@ -20,6 +20,8 @@ type DraftAsset = { id: string; kind: 'pasted-screenshot' | 'uploaded-screenshot
 type QuickComment = { annotationId: string; captureId: string; rect: Rect; text: string };
 type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; projectSnapshot?: ProjectSnapshot; annotationCount?: number; assetCount?: number; exportPath?: string; createdAt?: string; updatedAt?: string };
 type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; assets: BugAsset[]; projectSnapshot?: ProjectSnapshot };
+type IssueSubmission = { bugId: string; title: string; workItemUrl: string; webUrl: string; reused?: boolean; uploadedEvidence?: Array<{ filePath: string; markdown: string }> };
+type IssueSubmitResponse = { count: number; createdCount?: number; skippedCount?: number; submissions: IssueSubmission[]; submitPath: string };
 type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
 type CatalogStatus = { schema: 'markit.catalog.status.v1'; enabled: boolean; root: string; reason?: string; generatedAt?: string; projectCount?: number; domainCount?: number; source?: { pendingAssociations?: number }; integration?: { syncPolicy?: string } };
 type CatalogProject = { id: string; name: string; status: string; aliases: string[]; domainCount: number; activeDomainCount: number; pendingDomainCount: number; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; labels?: string[]; testing?: { enabled: boolean; defaultViewport: string; viewports: string[] }; confidence?: number };
@@ -676,31 +678,35 @@ export function App() {
   }
 
   async function bulkExportBugs(bugIds: string[]) {
-    if (!bugIds.length) return;
+    if (!bugIds.length) return { count: 0, exports: [] };
     const body = await api<{ count: number; exports: Array<{ bugId: string; exportPath: string }> }>('/api/bugs/bulk-export', { method: 'POST', body: JSON.stringify({ bugIds }) });
     setMessage(`已批量导出 ${body.count} 个 Bug。`);
     await refreshBugs();
     if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
+    return body;
   }
 
   async function draftGitLabIssues(bugIds: string[]) {
-    if (!bugIds.length) return;
+    if (!bugIds.length) return { count: 0, draftDir: '', jsonPath: '', markdownPath: '' };
     const body = await api<{ count: number; draftDir: string; jsonPath: string; markdownPath: string }>('/api/bugs/issue-draft', { method: 'POST', body: JSON.stringify({ bugIds }) });
     setMessage(`已生成 ${body.count} 个 ptc-wiki GitLab Issue 草稿：${body.markdownPath}`);
     await refreshBugs();
     if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
+    return body;
   }
 
   async function submitGitLabIssues(bugIds: string[]) {
-    if (!bugIds.length) return;
+    if (!bugIds.length) return { count: 0, submissions: [], submitPath: '' };
     try {
-      const body = await api<{ count: number; submissions: Array<{ workItemUrl: string; webUrl: string }>; submitPath: string }>('/api/bugs/issue-submit', { method: 'POST', body: JSON.stringify({ bugIds }) });
+      const body = await api<IssueSubmitResponse>('/api/bugs/issue-submit', { method: 'POST', body: JSON.stringify({ bugIds }) });
       const firstUrl = body.submissions[0]?.workItemUrl ?? body.submissions[0]?.webUrl ?? body.submitPath;
-      setMessage(`已真实创建 ${body.count} 个 ptc-wiki GitLab Issue：${firstUrl}`);
+      setMessage(`已真实创建 ${body.createdCount ?? body.count} 个 ptc-wiki GitLab Issue：${firstUrl}`);
       await refreshBugs();
       if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
+      return body;
     } catch (error) {
       setMessage(`真实挂 Issue 失败：${error instanceof Error ? error.message : String(error)}`);
+      throw error;
     }
   }
 
@@ -1850,10 +1856,13 @@ type BugProjectGroup = {
   bound: boolean;
 };
 
-function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; bulkExportBugs: (ids: string[]) => Promise<void>; draftGitLabIssues: (ids: string[]) => Promise<void>; submitGitLabIssues: (ids: string[]) => Promise<void>; deleteBug: (id: string) => Promise<void> }) {
+type BulkActionState = { status: 'idle' | 'running' | 'success' | 'error'; text: string; links?: Array<{ label: string; href: string }> };
+
+function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; bulkExportBugs: (ids: string[]) => Promise<{ count: number; exports: Array<{ bugId: string; exportPath: string }> }>; draftGitLabIssues: (ids: string[]) => Promise<{ count: number; markdownPath: string }>; submitGitLabIssues: (ids: string[]) => Promise<IssueSubmitResponse>; deleteBug: (id: string) => Promise<void> }) {
   const groups = useMemo(() => groupBugsByProject(props.bugs), [props.bugs]);
   const [selectedProjectKey, setSelectedProjectKey] = useState('');
   const [selectedBugIds, setSelectedBugIds] = useState<string[]>([]);
+  const [bulkAction, setBulkAction] = useState<BulkActionState>({ status: 'idle', text: '' });
   const selectedBug = props.bugs.find((bug) => bug.id === props.selectedBugId);
 
   useEffect(() => {
@@ -1889,6 +1898,43 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
     });
   };
   const selectedForAction = visibleSelectedIds.length ? visibleSelectedIds : visibleBugIds;
+  const actionRunning = bulkAction.status === 'running';
+
+  const runBulkExport = async () => {
+    if (!selectedForAction.length || actionRunning) return;
+    setBulkAction({ status: 'running', text: `正在批量导出 ${selectedForAction.length} 个 Bug...` });
+    try {
+      const result = await props.bulkExportBugs(selectedForAction);
+      setBulkAction({ status: 'success', text: `已完成：导出 ${result.count} 个 Bug。` });
+    } catch (error) {
+      setBulkAction({ status: 'error', text: `已停止：${error instanceof Error ? error.message : String(error)}` });
+    }
+  };
+
+  const runIssueDraft = async () => {
+    if (!selectedForAction.length || actionRunning) return;
+    setBulkAction({ status: 'running', text: `正在生成 ${selectedForAction.length} 个 Wiki Issue 草稿...` });
+    try {
+      const result = await props.draftGitLabIssues(selectedForAction);
+      setBulkAction({ status: 'success', text: `已完成：生成 ${result.count} 个草稿：${result.markdownPath}` });
+    } catch (error) {
+      setBulkAction({ status: 'error', text: `已停止：${error instanceof Error ? error.message : String(error)}` });
+    }
+  };
+
+  const runIssueSubmit = async () => {
+    if (!selectedForAction.length || actionRunning) return;
+    setBulkAction({ status: 'running', text: `正在上传截图并真实挂载 ${selectedForAction.length} 个 Wiki Issue，请勿重复点击...` });
+    try {
+      const result = await props.submitGitLabIssues(selectedForAction);
+      const created = result.createdCount ?? result.count;
+      const skipped = result.skippedCount ?? result.submissions.filter((item) => item.reused).length;
+      const links = result.submissions.slice(0, 4).map((item, index) => ({ label: item.reused ? `已存在 #${index + 1}` : `打开 #${index + 1}`, href: item.workItemUrl || item.webUrl }));
+      setBulkAction({ status: 'success', text: `已完成：新建 ${created} 个，跳过已存在 ${skipped} 个。`, links });
+    } catch (error) {
+      setBulkAction({ status: 'error', text: `已停止：${error instanceof Error ? error.message : String(error)}` });
+    }
+  };
 
   return (
     <section className="mk-bugs-page">
@@ -1921,11 +1967,12 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
             <em>{visibleBugs.length} 个 Bug</em>
           </div>
           <div className="mk-bulk-toolbar" data-testid="bug-bulk-toolbar">
-            <label><input type="checkbox" checked={allVisibleSelected} disabled={!visibleBugIds.length} onChange={toggleCurrentProject} />全选当前项目</label>
+            <label><input type="checkbox" checked={allVisibleSelected} disabled={!visibleBugIds.length || actionRunning} onChange={toggleCurrentProject} />全选当前项目</label>
             <span>{visibleSelectedIds.length ? `已选 ${visibleSelectedIds.length} 个` : '未选择时默认处理当前项目全部 Bug'}</span>
-            <button data-testid="bulk-export" disabled={!selectedForAction.length} onClick={() => void props.bulkExportBugs(selectedForAction)}>批量导出</button>
-            <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length} onClick={() => void props.draftGitLabIssues(selectedForAction)}>挂到 Wiki Issue 草稿</button>
-            <button data-testid="bulk-issue-submit" disabled={!selectedForAction.length} onClick={() => void props.submitGitLabIssues(selectedForAction)}>真实挂 Wiki Issue</button>
+            <button data-testid="bulk-export" disabled={!selectedForAction.length || actionRunning} onClick={() => void runBulkExport()}>批量导出</button>
+            <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueDraft()}>挂到 Wiki Issue 草稿</button>
+            <button data-testid="bulk-issue-submit" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueSubmit()}>{actionRunning ? '处理中...' : '真实挂 Wiki Issue'}</button>
+            {bulkAction.status !== 'idle' ? <div className={`mk-bulk-status is-${bulkAction.status}`} data-testid="bulk-action-status"><strong>{bulkAction.text}</strong>{bulkAction.links?.map((link) => <a key={link.href} href={link.href} target="_blank" rel="noreferrer">{link.label}</a>)}</div> : null}
           </div>
           <div className="mk-bug-list-stack">
             {visibleBugs.map((bug) => (
