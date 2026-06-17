@@ -11,6 +11,7 @@ import { mapAnnotation, mapBug, mapBugAsset, mapCapture } from './mappers.js';
 const maxAssetBytes = 8 * 1024 * 1024;
 const allowedAssetTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const DEFAULT_ISSUE_HUB_PROJECT_PATH = 'ptc/fe/ptc-wiki';
+const DEFAULT_GITLAB_BASE_URL = 'https://gitlab.adsconflux.xyz';
 
 type IssueProjectSnapshot = {
   project?: {
@@ -30,6 +31,26 @@ type IssueProjectSnapshot = {
     status?: string;
     activeBranch?: string;
   };
+};
+
+type IssuePayload = ReturnType<typeof issuePayloadFromDetail>;
+
+type GitLabConfig = {
+  baseUrl: string;
+  token: string;
+};
+
+type GitLabIssueResult = {
+  bugId: string;
+  title: string;
+  projectPath: string;
+  iid: number;
+  id: number;
+  webUrl: string;
+  workItemUrl: string;
+  assignee: string;
+  assigneeResolved: boolean;
+  labels: string[];
 };
 
 export function bugsRouter(context: ServerContext): Router {
@@ -72,6 +93,13 @@ export function bugsRouter(context: ServerContext): Router {
     const draft = await writeIssueDraft(context, bugIds);
     await context.database.save();
     res.json(draft);
+  }));
+
+  router.post('/api/bugs/issue-submit', asyncHandler(async (req, res) => {
+    const bugIds = bugIdsFromBody(req.body);
+    const result = await submitIssueDraft(context, bugIds);
+    await context.database.save();
+    res.json(result);
   }));
 
   router.get('/api/bugs/:id', asyncHandler(async (req, res) => {
@@ -348,6 +376,101 @@ async function writeIssueDraft(context: ServerContext, bugIds: string[]) {
   return { mode: 'dry-run', count: issues.length, draftDir, jsonPath, markdownPath, issues };
 }
 
+async function submitIssueDraft(context: ServerContext, bugIds: string[]) {
+  const config = gitLabConfigFromEnv(process.env);
+  const draft = await writeIssueDraft(context, bugIds);
+  const submissions = await submitGitLabIssues(draft.issues, config);
+  const submittedAt = nowIso();
+  const submitPath = join(draft.draftDir, 'submitted.json');
+  const result = {
+    ...draft,
+    mode: 'submit',
+    submittedAt,
+    target: {
+      baseUrl: config.baseUrl,
+      projectPath: DEFAULT_ISSUE_HUB_PROJECT_PATH
+    },
+    submissions
+  };
+  await writeFile(submitPath, JSON.stringify({ schema: 'markit.gitlab-issue-submit.v1', ...result }, null, 2));
+  return { ...result, submitPath };
+}
+
+function gitLabConfigFromEnv(env: NodeJS.ProcessEnv): GitLabConfig {
+  const baseUrl = String(env.MARKIT_GITLAB_BASE_URL || DEFAULT_GITLAB_BASE_URL).replace(/\/+$/, '');
+  const token = firstNonEmpty(env.MARKIT_GITLAB_TOKEN, env.GITLAB_TOKEN, env.GLAB_TOKEN);
+  if (!token) {
+    throw new MarkitHttpError(424, 'gitlab_auth_missing', 'Missing GitLab token. Set MARKIT_GITLAB_TOKEN for gitlab.adsconflux.xyz, then restart Markit.');
+  }
+  return { baseUrl, token };
+}
+
+async function submitGitLabIssues(issues: IssuePayload[], config: GitLabConfig): Promise<GitLabIssueResult[]> {
+  const assigneeCache = new Map<string, number | undefined>();
+  const results: GitLabIssueResult[] = [];
+  for (const issue of issues) {
+    const assigneeId = issue.assignee ? await resolveGitLabUserId(config, issue.assignee, assigneeCache) : undefined;
+    const body: Record<string, unknown> = {
+      title: issue.title,
+      description: issue.description,
+      labels: issue.labels.join(',')
+    };
+    if (assigneeId) body.assignee_ids = [assigneeId];
+    const created = await gitLabRequest<{ id: number; iid: number; web_url?: string }>(
+      config,
+      `/api/v4/projects/${encodeURIComponent(issue.projectPath)}/issues`,
+      { method: 'POST', body }
+    );
+    const webUrl = created.web_url ?? `${config.baseUrl}/${issue.projectPath}/-/issues/${created.iid}`;
+    results.push({
+      bugId: issue.bugId,
+      title: issue.title,
+      projectPath: issue.projectPath,
+      iid: created.iid,
+      id: created.id,
+      webUrl,
+      workItemUrl: `${config.baseUrl}/${issue.projectPath}/-/work_items/${created.iid}`,
+      assignee: issue.assignee,
+      assigneeResolved: Boolean(assigneeId),
+      labels: issue.labels
+    });
+  }
+  return results;
+}
+
+async function resolveGitLabUserId(config: GitLabConfig, username: string, cache: Map<string, number | undefined>): Promise<number | undefined> {
+  const key = username.trim();
+  if (!key) return undefined;
+  if (cache.has(key)) return cache.get(key);
+  const users = await gitLabRequest<Array<{ id: number; username: string }>>(
+    config,
+    `/api/v4/users?username=${encodeURIComponent(key)}`,
+    { method: 'GET', tolerateNotFound: true }
+  );
+  const userId = Array.isArray(users) ? users.find((user) => user.username === key)?.id : undefined;
+  cache.set(key, userId);
+  return userId;
+}
+
+async function gitLabRequest<T>(config: GitLabConfig, path: string, options: { method: 'GET' | 'POST'; body?: Record<string, unknown>; tolerateNotFound?: boolean }): Promise<T> {
+  const init: RequestInit = {
+    method: options.method,
+    headers: {
+      'content-type': 'application/json',
+      'private-token': config.token
+    }
+  };
+  if (options.body) init.body = JSON.stringify(options.body);
+  const response = await fetch(`${config.baseUrl}${path}`, init);
+  if (options.tolerateNotFound && response.status === 404) return [] as T;
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    const message = detail ? `GitLab API failed: ${response.status} ${detail.slice(0, 240)}` : `GitLab API failed: ${response.status} ${response.statusText}`;
+    throw new MarkitHttpError(response.status === 401 || response.status === 403 ? 424 : 502, 'gitlab_submit_failed', message);
+  }
+  return await response.json() as T;
+}
+
 function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, markdown: string) {
   const bug = detail.bug;
   const snapshot = detail.projectSnapshot as IssueProjectSnapshot | undefined;
@@ -356,11 +479,13 @@ function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, m
   const branch = project?.activeBranch ?? snapshot?.domain?.activeBranch ?? '';
   const businessProjectPath = project?.issueProjectPath ?? project?.gitlabPath ?? '';
   const sourceProjectPath = project?.gitlabPath ?? project?.issueProjectPath ?? '';
-  const labels = [...new Set([...(project?.labels ?? ['markit', 'bug']), bug.severity, domain].filter(Boolean))];
+  const bindingStatus = project ? 'bound' : 'unbound';
+  const labels = [...new Set([...(project?.labels ?? ['markit', 'bug']), bindingStatus === 'unbound' ? 'unbound-project' : '', bug.severity, domain].filter(Boolean))];
   const issue = {
     bugId: bug.id,
     projectPath: DEFAULT_ISSUE_HUB_PROJECT_PATH,
     hubProjectPath: DEFAULT_ISSUE_HUB_PROJECT_PATH,
+    bindingStatus,
     sourceProjectPath,
     businessProjectPath,
     projectId: project?.id ?? '',
@@ -393,11 +518,12 @@ function severityRank(value: string): number {
 }
 
 function renderIssueDraftMarkdown(issues: Array<ReturnType<typeof issuePayloadFromDetail>>) {
-  return `# GitLab Issue Drafts\n\n${issues.map((issue, index) => `## ${index + 1}. ${issue.title}\n\n- Issue Hub: ${issue.projectPath}\n- Business Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n- Domain: ${issue.domain}\n- Branch: ${issue.branch || 'not configured'}\n- Assignee: ${issue.assignee || 'not configured'}\n- Labels: ${issue.labels.join(', ')}\n- Export: ${issue.exportPath}\n- Source: ${issue.sourceUrl}\n\n${issue.description}`).join('\n\n---\n\n')}\n`;
+  return `# GitLab Issue Drafts\n\n${issues.map((issue, index) => `## ${index + 1}. ${issue.title}\n\n- Issue Hub: ${issue.projectPath}\n- Binding Status: ${issue.bindingStatus}\n- Business Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n- Domain: ${issue.domain}\n- Branch: ${issue.branch || 'not configured'}\n- Assignee: ${issue.assignee || 'not configured'}\n- Labels: ${issue.labels.join(', ')}\n- Export: ${issue.exportPath}\n- Source: ${issue.sourceUrl}\n\n${issue.description}`).join('\n\n---\n\n')}\n`;
 }
 
 function renderIssueDescription(issue: {
   projectPath: string;
+  bindingStatus: string;
   projectId: string;
   projectName: string;
   sourceProjectPath: string;
@@ -410,7 +536,7 @@ function renderIssueDescription(issue: {
   sourceUrl: string;
   finalUrl: string;
 }, markdown: string): string {
-  return `## Markit Routing\n\n- Issue Hub: ${issue.projectPath}\n- Markit Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Bound Domain: ${issue.domain}\n- Current Branch: ${issue.branch || 'not configured'}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n- Assignee Suggestion: ${issue.assignee || 'not configured'}\n- Labels: ${issue.labels.join(', ')}\n- Export Path: ${issue.exportPath}\n- Source URL: ${issue.sourceUrl}\n- Final URL: ${issue.finalUrl}\n\n---\n\n${markdown}\n`;
+  return `## Markit Routing\n\n- Issue Hub: ${issue.projectPath}\n- Binding Status: ${issue.bindingStatus}\n- Markit Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Bound Domain: ${issue.domain}\n- Current Branch: ${issue.branch || 'not configured'}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n- Assignee Suggestion: ${issue.assignee || 'not configured'}\n- Labels: ${issue.labels.join(', ')}\n- Export Path: ${issue.exportPath}\n- Source URL: ${issue.sourceUrl}\n- Final URL: ${issue.finalUrl}\n\n---\n\n${markdown}\n`;
 }
 
 function safeHost(value: string): string {
@@ -419,6 +545,10 @@ function safeHost(value: string): string {
   } catch {
     return value;
   }
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string {
+  return values.map((value) => value?.trim()).find((value): value is string => Boolean(value)) ?? '';
 }
 
 function renderMarkdown(detail: { bug: ReturnType<typeof mapBug>; annotations: unknown[]; assets?: ReturnType<typeof mapBugAsset>[]; projectSnapshot?: any }, groups: Map<string, Row[]>): string {

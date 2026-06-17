@@ -178,6 +178,27 @@ describe('session and capture API', () => {
     expect(issueMarkdown).toContain('[P2] demo.example.com - 粘贴截图证据');
     expect(issueMarkdown).toContain('- Issue Hub: ptc/fe/ptc-wiki');
     expect(issueMarkdown).toContain('- Business Repo: ptc/fe/demo');
+    const previousGitLab = {
+      markit: process.env.MARKIT_GITLAB_TOKEN,
+      generic: process.env.GITLAB_TOKEN,
+      glab: process.env.GLAB_TOKEN
+    };
+    delete process.env.MARKIT_GITLAB_TOKEN;
+    delete process.env.GITLAB_TOKEN;
+    delete process.env.GLAB_TOKEN;
+    try {
+      const submitResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ bugIds: [bugBody.bug.id] })
+      });
+      expect(submitResponse.status).toBe(424);
+      expect(await submitResponse.json()).toMatchObject({ error: { code: 'gitlab_auth_missing' } });
+    } finally {
+      restoreEnv('MARKIT_GITLAB_TOKEN', previousGitLab.markit);
+      restoreEnv('GITLAB_TOKEN', previousGitLab.generic);
+      restoreEnv('GLAB_TOKEN', previousGitLab.glab);
+    }
 
     const deleteResponse = await fetch(`${apiBaseUrl}/api/bugs/${bugBody.bug.id}`, { method: 'DELETE' });
     expect(deleteResponse.status).toBe(200);
@@ -185,6 +206,49 @@ describe('session and capture API', () => {
     expect(bugsAfterDelete.bugs.some((bug: { id: string }) => bug.id === bugBody.bug.id)).toBe(false);
     const deletedAssetResponse = await fetch(`${apiBaseUrl}/api/bug-assets/${bugBody.assets[0].id}/image`);
     expect(deletedAssetResponse.status).toBe(404);
+  }, 30_000);
+
+  it('drafts unbound bugs to the wiki hub with unbound metadata', async () => {
+    const createResponse = await fetch(`${apiBaseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: `${fixtureBaseUrl}/index.html`, viewport: { name: 'Desktop 800x500', width: 800, height: 500, deviceScaleFactor: 1 } })
+    });
+    expect(createResponse.status).toBe(201);
+    const created = await createResponse.json();
+    const bugResponse = await fetch(`${apiBaseUrl}/api/bugs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: created.session.id,
+        title: '未绑定项目 Bug',
+        actual: '直接输入 URL 时没有 catalog 项目绑定。',
+        expected: '仍应能挂到统一 Wiki Hub，并标记 unbound。',
+        severity: 'P3',
+        status: 'draft',
+        sourceUrl: created.session.sourceUrl,
+        finalUrl: created.capture.finalUrl,
+        primaryCaptureId: created.capture.id
+      })
+    });
+    expect(bugResponse.status).toBe(201);
+    const bugBody = await bugResponse.json();
+    const issueDraftResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-draft`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bugIds: [bugBody.bug.id] })
+    });
+    expect(issueDraftResponse.status).toBe(200);
+    const issueDraft = await issueDraftResponse.json();
+    expect(issueDraft.issues[0]).toMatchObject({
+      projectPath: 'ptc/fe/ptc-wiki',
+      bindingStatus: 'unbound',
+      projectName: '',
+      sourceProjectPath: '',
+      businessProjectPath: ''
+    });
+    expect(issueDraft.issues[0].labels).toContain('unbound-project');
+    expect(await readFile(issueDraft.markdownPath, 'utf8')).toContain('- Binding Status: unbound');
   }, 30_000);
 
   it('revives an inactive runtime page before browse actions', async () => {

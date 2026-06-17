@@ -691,6 +691,19 @@ export function App() {
     if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
   }
 
+  async function submitGitLabIssues(bugIds: string[]) {
+    if (!bugIds.length) return;
+    try {
+      const body = await api<{ count: number; submissions: Array<{ workItemUrl: string; webUrl: string }>; submitPath: string }>('/api/bugs/issue-submit', { method: 'POST', body: JSON.stringify({ bugIds }) });
+      const firstUrl = body.submissions[0]?.workItemUrl ?? body.submissions[0]?.webUrl ?? body.submitPath;
+      setMessage(`已真实创建 ${body.count} 个 ptc-wiki GitLab Issue：${firstUrl}`);
+      await refreshBugs();
+      if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
+    } catch (error) {
+      setMessage(`真实挂 Issue 失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   async function deleteBug(bugId: string) {
     const confirmed = window.confirm('删除这个 Bug？已保存的 Bug 记录、附件和导出文件会移除；原始截图记录不受影响。');
     if (!confirmed) return;
@@ -1133,7 +1146,7 @@ export function App() {
           </aside>
         </section>
       ) : null}
-      {view === 'bugs' ? <BugsView bugs={bugs} selectedBugId={selectedBugId} bugDetail={bugDetail} loadBugDetail={loadBugDetail} patchBug={patchBug} exportBug={exportBug} bulkExportBugs={bulkExportBugs} draftGitLabIssues={draftGitLabIssues} deleteBug={deleteBug} /> : null}
+      {view === 'bugs' ? <BugsView bugs={bugs} selectedBugId={selectedBugId} bugDetail={bugDetail} loadBugDetail={loadBugDetail} patchBug={patchBug} exportBug={exportBug} bulkExportBugs={bulkExportBugs} draftGitLabIssues={draftGitLabIssues} submitGitLabIssues={submitGitLabIssues} deleteBug={deleteBug} /> : null}
       {view === 'settings' ? <Settings aiStatus={aiStatus} /> : null}
     </main>
   );
@@ -1837,7 +1850,7 @@ type BugProjectGroup = {
   bound: boolean;
 };
 
-function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; bulkExportBugs: (ids: string[]) => Promise<void>; draftGitLabIssues: (ids: string[]) => Promise<void>; deleteBug: (id: string) => Promise<void> }) {
+function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; bulkExportBugs: (ids: string[]) => Promise<void>; draftGitLabIssues: (ids: string[]) => Promise<void>; submitGitLabIssues: (ids: string[]) => Promise<void>; deleteBug: (id: string) => Promise<void> }) {
   const groups = useMemo(() => groupBugsByProject(props.bugs), [props.bugs]);
   const [selectedProjectKey, setSelectedProjectKey] = useState('');
   const [selectedBugIds, setSelectedBugIds] = useState<string[]>([]);
@@ -1912,6 +1925,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
             <span>{visibleSelectedIds.length ? `已选 ${visibleSelectedIds.length} 个` : '未选择时默认处理当前项目全部 Bug'}</span>
             <button data-testid="bulk-export" disabled={!selectedForAction.length} onClick={() => void props.bulkExportBugs(selectedForAction)}>批量导出</button>
             <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length} onClick={() => void props.draftGitLabIssues(selectedForAction)}>挂到 Wiki Issue 草稿</button>
+            <button data-testid="bulk-issue-submit" disabled={!selectedForAction.length} onClick={() => void props.submitGitLabIssues(selectedForAction)}>真实挂 Wiki Issue</button>
           </div>
           <div className="mk-bug-list-stack">
             {visibleBugs.map((bug) => (
