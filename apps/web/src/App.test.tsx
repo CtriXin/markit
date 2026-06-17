@@ -36,6 +36,7 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('全选当前项目');
     expect(source).toContain('bulkExportBugs');
     expect(source).toContain('draftGitLabIssues');
+    expect(source).toContain('submitGitLabIssues');
     expect(source).not.toMatch(/ChatComposer|project\/run/i);
   });
 });
