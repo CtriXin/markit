@@ -21,6 +21,7 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('保存为一个 Bug');
     expect(source).toContain('data-testid="url-input"');
     expect(source).toContain('Project Catalog');
+    expect(source).toContain('可测试项目');
     expect(source).toContain('testId="catalog-project-select"');
     expect(source).toContain('直接输入 URL 仍可测试');
     expect(source).toContain('SearchableSelect');
@@ -29,6 +30,9 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('className="mk-panel-section mk-meta-list" open');
     expect(source).toContain('projectSnapshot');
     expect(source).toContain('绑定域名');
+    expect(source).toContain('项目列表');
+    expect(source).toContain('groupBugsByProject');
+    expect(source).toContain('mk-project-bug-list');
     expect(source).not.toMatch(/ChatComposer|project\/run/i);
   });
 });

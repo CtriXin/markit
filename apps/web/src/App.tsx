@@ -1461,7 +1461,7 @@ function ProjectCatalogPicker(props: {
       <div className="mk-catalog-head">
         <div>
           <strong>Project Catalog</strong>
-          <span>{props.projects.length} 个项目 / {props.status.domainCount ?? 0} 个域名；选择后会填入 URL。</span>
+          <span>{props.projects.length} 个可测试项目 / {props.status.domainCount ?? 0} 个域名；选择后会填入 URL。</span>
         </div>
         <em>{props.status.source?.pendingAssociations ? `${props.status.source.pendingAssociations} 条 pending 关联` : 'catalog ready'}</em>
       </div>
@@ -1810,38 +1810,117 @@ function AnnotationCropPreview({ annotation, capture }: { annotation: Annotation
   );
 }
 
+type BugProjectGroup = {
+  key: string;
+  title: string;
+  subtitle: string;
+  branch: string;
+  bugs: Bug[];
+  bound: boolean;
+};
+
 function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; deleteBug: (id: string) => Promise<void> }) {
+  const groups = useMemo(() => groupBugsByProject(props.bugs), [props.bugs]);
+  const [selectedProjectKey, setSelectedProjectKey] = useState('');
+  const selectedBug = props.bugs.find((bug) => bug.id === props.selectedBugId);
+
   useEffect(() => {
-    if (!props.selectedBugId && props.bugs[0]) void props.loadBugDetail(props.bugs[0].id);
-  }, [props.bugs.length, props.selectedBugId]);
+    if (selectedBug) {
+      const key = bugProjectGroupKey(selectedBug);
+      if (key !== selectedProjectKey) setSelectedProjectKey(key);
+      return;
+    }
+    if (!selectedProjectKey && groups[0]) setSelectedProjectKey(groups[0].key);
+  }, [groups, selectedBug?.id, selectedProjectKey]);
+
+  const selectedGroup = groups.find((group) => group.key === selectedProjectKey) ?? groups[0];
+  const visibleBugs = selectedGroup?.bugs ?? [];
+
+  useEffect(() => {
+    if (!props.selectedBugId && visibleBugs[0]) void props.loadBugDetail(visibleBugs[0].id);
+  }, [visibleBugs, props.selectedBugId]);
+
   return (
     <section className="mk-bugs-page">
-      <div className="mk-page-heading"><div><span className="mk-kicker">OpenDesign 评论式收件箱</span><h1>Bug 列表</h1></div><p>已捕获 {props.bugs.length} 个带截图证据的问题。</p></div>
+      <div className="mk-page-heading"><div><span className="mk-kicker">OpenDesign 评论式收件箱</span><h1>Bug 列表</h1></div><p>已捕获 {props.bugs.length} 个带截图证据的问题，按项目归档。</p></div>
       <div className="mk-bugs-layout">
-        <div className="mk-bug-grid">
-          {props.bugs.map((bug) => (
-            <article data-testid="bug-card" className={bug.id === props.selectedBugId ? 'mk-bug-card is-active' : 'mk-bug-card'} key={bug.id} onClick={() => props.loadBugDetail(bug.id)}>
-              <div className="mk-card-top"><strong>{bug.severity}</strong><span>{statusLabels[bug.status] ?? bug.status}</span></div>
-              <div className="mk-card-project"><strong>{bug.projectSnapshot?.project.name ?? '未绑定项目'}</strong><span>{bug.projectSnapshot?.domain?.host ?? safeHost(bug.finalUrl)}</span></div>
-              <div className="mk-card-tags">{bug.tags?.[0] ? <em>{bugTypeLabel(bug.tags[0])}</em> : null}<small>{safeHost(bug.finalUrl)}</small></div>
-              <h2>{bug.title}</h2>
-              <p>{bug.actual}</p>
-              <span data-testid="bug-annotation-count">{bug.annotationCount ?? 0} 条标注</span>
-              {bug.assetCount ? <span className="mk-reference-count">{bug.assetCount} 张截图</span> : null}
-              {bug.references?.length ? <span className="mk-reference-count">{bug.references.length} 个引用</span> : null}
-              <div className="mk-card-actions">
-                <button data-testid="export-evidence" onClick={(event) => { event.stopPropagation(); props.exportBug(bug.id); }}>导出证据</button>
-                <button className="mk-danger-button" data-testid="delete-bug" onClick={(event) => { event.stopPropagation(); void props.deleteBug(bug.id); }}>删除</button>
-              </div>
-              {bug.exportPath ? <small>{bug.exportPath}</small> : null}
-            </article>
+        <aside className="mk-project-bug-list" aria-label="项目列表">
+          <div className="mk-project-bug-list-head"><strong>项目列表</strong><span>{groups.length} 组</span></div>
+          {groups.map((group) => (
+            <button
+              type="button"
+              data-testid="bug-project-group"
+              key={group.key}
+              className={group.key === selectedGroup?.key ? 'is-active' : ''}
+              onClick={() => {
+                setSelectedProjectKey(group.key);
+                if (group.bugs[0]) void props.loadBugDetail(group.bugs[0].id);
+              }}
+            >
+              <strong>{group.title}</strong>
+              <span>{group.subtitle}</span>
+              <small>{group.branch}</small>
+              <em>{group.bugs.length}</em>
+            </button>
           ))}
-          {props.bugs.length === 0 ? <p className="mk-empty">还没有保存 Bug。</p> : null}
+          {groups.length === 0 ? <p className="mk-empty">还没有保存 Bug。</p> : null}
+        </aside>
+        <div className="mk-project-bugs-column">
+          <div className="mk-project-bugs-head">
+            <div><span>当前项目</span><strong>{selectedGroup?.title ?? '暂无项目'}</strong></div>
+            <em>{visibleBugs.length} 个 Bug</em>
+          </div>
+          <div className="mk-bug-list-stack">
+            {visibleBugs.map((bug) => (
+              <article data-testid="bug-card" className={bug.id === props.selectedBugId ? 'mk-bug-card is-active' : 'mk-bug-card'} key={bug.id} onClick={() => props.loadBugDetail(bug.id)}>
+                <div className="mk-card-top"><strong>{bug.severity}</strong><span>{statusLabels[bug.status] ?? bug.status}</span></div>
+                <div className="mk-card-project"><strong>{bug.projectSnapshot?.project.name ?? '未绑定项目'}</strong><span>{bug.projectSnapshot?.domain?.host ?? safeHost(bug.finalUrl)}</span></div>
+                <div className="mk-card-tags">{bug.tags?.[0] ? <em>{bugTypeLabel(bug.tags[0])}</em> : null}<small>{safeHost(bug.finalUrl)}</small></div>
+                <h2>{bug.title}</h2>
+                <p>{bug.actual}</p>
+                <span data-testid="bug-annotation-count">{bug.annotationCount ?? 0} 条标注</span>
+                {bug.assetCount ? <span className="mk-reference-count">{bug.assetCount} 张截图</span> : null}
+                {bug.references?.length ? <span className="mk-reference-count">{bug.references.length} 个引用</span> : null}
+                <div className="mk-card-actions">
+                  <button data-testid="export-evidence" onClick={(event) => { event.stopPropagation(); props.exportBug(bug.id); }}>导出证据</button>
+                  <button className="mk-danger-button" data-testid="delete-bug" onClick={(event) => { event.stopPropagation(); void props.deleteBug(bug.id); }}>删除</button>
+                </div>
+                {bug.exportPath ? <small>{bug.exportPath}</small> : null}
+              </article>
+            ))}
+            {visibleBugs.length === 0 ? <p className="mk-empty">这个项目还没有 Bug。</p> : null}
+          </div>
         </div>
         <BugDetailPanel detail={props.bugDetail} patchBug={props.patchBug} exportBug={props.exportBug} deleteBug={props.deleteBug} />
       </div>
     </section>
   );
+}
+
+function groupBugsByProject(bugs: Bug[]): BugProjectGroup[] {
+  const groups = new Map<string, BugProjectGroup>();
+  for (const bug of bugs) {
+    const key = bugProjectGroupKey(bug);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.bugs.push(bug);
+      continue;
+    }
+    const snapshot = bug.projectSnapshot;
+    groups.set(key, {
+      key,
+      title: snapshot?.project.name ?? '未绑定项目',
+      subtitle: snapshot?.domain?.host ?? safeHost(bug.finalUrl),
+      branch: projectBranchLabel(snapshot),
+      bugs: [bug],
+      bound: Boolean(snapshot)
+    });
+  }
+  return Array.from(groups.values()).sort((a, b) => Number(b.bound) - Number(a.bound) || b.bugs.length - a.bugs.length || a.title.localeCompare(b.title));
+}
+
+function bugProjectGroupKey(bug: Bug): string {
+  return bug.projectSnapshot?.project.id ?? `unbound:${safeHost(bug.finalUrl)}`;
 }
 
 function BugDetailPanel({ detail, patchBug, exportBug, deleteBug }: { detail: BugDetail | undefined; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; deleteBug: (id: string) => Promise<void> }) {

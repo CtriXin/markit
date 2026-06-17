@@ -203,7 +203,9 @@ export async function loadCatalog(options: CatalogOptions = {}): Promise<LoadedC
       appendProjectDomain(projectDomainsById, domain);
     }
     for (const [projectId, domains] of projectDomainsById.entries()) {
-      projectDomainsById.set(projectId, sortDomains(dedupeDomains(domains)));
+      const projectDomains = sortDomains(dedupeDomains(domains));
+      projectDomainsById.set(projectId, projectDomains);
+      syncProjectDomainCounts(projectMap.get(projectId), projectDomains);
     }
 
     return {
@@ -225,7 +227,7 @@ export function searchCatalogProjects(catalog: LoadedCatalog, query = '', limit 
   const projects = normalizedQuery
     ? catalog.projects.filter((project) => projectSearchText(project, catalog.projectDomainsById.get(project.id) ?? []).includes(normalizedQuery))
     : catalog.projects;
-  return projects.slice(0, Math.max(1, Math.min(limit, 250)));
+  return projects.filter((project) => project.domainCount > 0).slice(0, Math.max(1, Math.min(limit, 250)));
 }
 
 export function listCatalogDomains(catalog: LoadedCatalog, projectId: string): CatalogDomain[] {
@@ -380,6 +382,13 @@ function toProject(raw: RawProject): CatalogProject | undefined {
   if (typeof raw.confidence === 'number') project.confidence = raw.confidence;
   if (raw.notes?.length) project.notes = raw.notes;
   return project;
+}
+
+function syncProjectDomainCounts(project: CatalogProject | undefined, domains: CatalogDomain[]) {
+  if (!project) return;
+  project.domainCount = domains.length;
+  project.activeDomainCount = domains.filter((domain) => domain.status === 'active').length;
+  project.pendingDomainCount = domains.filter((domain) => domain.status === 'pending').length;
 }
 
 function projectDomains(raw: RawProject): CatalogDomain[] {
