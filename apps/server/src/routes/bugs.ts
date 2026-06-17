@@ -481,7 +481,7 @@ function gitLabGlabRequest<T>(config: GitLabConfig, path: string, options: { met
   return new Promise((resolve, reject) => {
     const endpoint = path.replace(/^\/api\/v4\/?/, '');
     const args = ['api', '--hostname', config.hostname, '--method', options.method, endpoint, '--output', 'json'];
-    if (options.body) args.push('--input', '-');
+    if (options.body) args.push('--header', 'Content-Type: application/json', '--input', '-');
     const child = spawn('glab', args, { stdio: ['pipe', 'pipe', 'pipe'] });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
