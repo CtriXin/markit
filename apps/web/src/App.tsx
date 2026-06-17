@@ -531,9 +531,14 @@ export function App() {
   async function saveBug(inputDraft: DraftBug = draft, annotationIdsOverride?: string[]) {
     if (!session || !capture) return;
     if (pendingAnnotationRef.current) await pendingAnnotationRef.current;
-    const completedDraft = completeDraft(inputDraft, activeTarget);
+    const annotationIds = annotationIdsOverride ?? (selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id));
+    const evidenceText = annotations
+      .filter((annotation) => annotationIds.includes(annotation.id))
+      .map((annotation) => annotation.note.trim())
+      .find(Boolean) || annotations.map((annotation) => annotation.note.trim()).find(Boolean) || '';
+    const completedDraft = completeDraft(inputDraft, activeTarget, evidenceText);
     if (!completedDraft.title || !completedDraft.actual || !completedDraft.expected || !completedDraft.severity) {
-      setMessage('至少填写口语描述，或补齐标题、实际表现、期望表现和优先级。');
+      setMessage('至少框选一个区域，或写一句口语描述。');
       return;
     }
     setDraft(completedDraft);
@@ -552,7 +557,7 @@ export function App() {
         tags: [completedDraft.bugType].filter(Boolean),
         references: referencesFromDraft(completedDraft),
         assets: draftAssets.map(({ id: _id, ...asset }) => asset),
-        annotationIds: annotationIdsOverride ?? (selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id))
+        annotationIds
       })
     });
     setMessage(`已保存 Bug ${body.bug.id}`);
@@ -601,7 +606,7 @@ export function App() {
 
   async function normalizeBug() {
     if (!session || !capture) return;
-    setBusy('AI 正在整理描述');
+    setBusy('AI 正在整理 Bug');
     setMessage('');
     try {
       const body = await api<{ result: any }>('/api/ai/normalize-bug', { method: 'POST', body: JSON.stringify({ sessionId: session.id, captureId: capture.id, annotationIds: selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id), sourceText: draft.comment || draft.actual, strictness: 'strict', assets: draftAssets.map((asset) => ({ label: asset.label, fileName: asset.fileName, mimeType: asset.mimeType, dataUrl: asset.dataUrl })) }) });
@@ -1015,7 +1020,6 @@ function ZoomControls(props: { zoomMode: ZoomMode; zoomPercent: number; setFit: 
         <option value="fit">Fit</option>
         {zoomPresets.map((preset) => <option key={preset} value={preset}>{preset}%</option>)}
       </select>
-      <span data-testid="zoom-label">{props.zoomMode === 'fit' ? 'Fit' : `${props.zoomPercent}%`}</span>
       <button data-testid="zoom-in" onClick={props.zoomIn} aria-label="放大画布">+</button>
     </div>
   );
@@ -1269,7 +1273,8 @@ function BugPanel(props: {
   deleteAnnotation: (id: string) => Promise<void>;
 }) {
   const update = (key: keyof DraftBug, value: string) => props.setDraft((current) => ({ ...current, [key]: value }));
-  const canSave = Boolean((props.draft.title && props.draft.actual && props.draft.expected && props.draft.severity) || props.draft.comment.trim());
+  const hasAnnotationText = props.annotations.some((annotation) => annotation.note.trim());
+  const canSave = Boolean(props.annotations.length || props.draft.title.trim() || props.draft.actual.trim() || props.draft.comment.trim() || hasAnnotationText);
   const onAssetInput = (event: ChangeEvent<HTMLInputElement>) => {
     if (event.currentTarget.files) void props.addDraftAssetFiles(event.currentTarget.files, 'uploaded-screenshot');
     event.currentTarget.value = '';
@@ -1350,19 +1355,19 @@ function BugPanel(props: {
             </div>
           ) : null}
         </section>
-        <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>整理描述（{props.aiStatus.provider}{props.aiStatus.supportsImages ? '+图片' : ''}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>保存为一个 Bug</button></div>
+        <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>AI 整理 Bug（{props.aiStatus.provider}{props.aiStatus.supportsImages ? '+图片' : ''}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>保存为一个 Bug</button></div>
         <small>快捷：1/2/3/4 设 P0/P1/P2/P3，A 快速保存，Z 撤销标注，O 圈选，D 自由画；画布滚轮会滚动真实页面。</small>
         {!props.aiStatus.enabled ? <small>{props.aiStatus.reason}</small> : null}
       </section>
-      <section className="mk-panel-section mk-target-card">
-        <h2>点击识别</h2>
+      <details className="mk-panel-section mk-target-card">
+        <summary>点击识别</summary>
         {props.activeTarget ? <dl data-testid="active-target"><dt>选择器</dt><dd>{props.activeTarget.selector}</dd><dt>标签</dt><dd>{props.activeTarget.label || props.activeTarget.text || props.activeTarget.tagName}</dd>{props.activeTarget.value ? <><dt>值</dt><dd>{props.activeTarget.value}</dd></> : null}<dt>评分</dt><dd>{props.activeTarget.selectorScore}</dd></dl> : <p className="mk-empty">在画布上移动或点击，自动识别 DOM 目标。</p>}
         {props.lastPoint ? <small>坐标 {props.lastPoint.x.toFixed(0)}, {props.lastPoint.y.toFixed(0)}</small> : null}
-      </section>
-      <section className="mk-panel-section mk-meta-list">
-        <h2>截图信息</h2>
+      </details>
+      <details className="mk-panel-section mk-meta-list">
+        <summary>截图信息</summary>
         <dl><dt>视口</dt><dd>{props.capture.viewport.name}</dd><dt>模式</dt><dd>{captureModeLabel(props.capture.mode)}</dd><dt>来源</dt><dd>{props.session.sourceUrl}</dd><dt>最终地址</dt><dd>{props.capture.finalUrl}</dd></dl>
-      </section>
+      </details>
     </div>
   );
 }
@@ -1493,7 +1498,7 @@ function BugDetailPanel({ detail, patchBug, exportBug, deleteBug }: { detail: Bu
 }
 
 function Settings({ aiStatus }: { aiStatus: AiStatus }) {
-  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}{aiStatus.supportsImages ? '，支持图片输入' : ''}{aiStatus.configSource ? `，来源 ${aiStatus.configSource}` : ''}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型；仅在开启 MMF / multimodal provider 并点击整理描述时发送对比截图。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / Z 撤销标注 / 1-4 优先级 / Cmd+S 保存 / Cmd+V 粘贴截图</dd></dl></section>;
+  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}{aiStatus.supportsImages ? '，支持图片输入' : ''}{aiStatus.configSource ? `，来源 ${aiStatus.configSource}` : ''}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型；仅在开启 MMF / multimodal provider 并点击 AI 整理 Bug 时发送对比截图。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / Z 撤销标注 / 1-4 优先级 / Cmd+S 保存 / Cmd+V 粘贴截图</dd></dl></section>;
 }
 
 function AnnotationShape({ annotation, selected, index }: { annotation: Annotation; selected: boolean; index: number }) {
@@ -1520,15 +1525,16 @@ async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
-function completeDraft(draft: DraftBug, target?: DomTarget): DraftBug {
+function completeDraft(draft: DraftBug, target?: DomTarget, evidenceText = ''): DraftBug {
   const comment = draft.comment.trim();
+  const fallbackText = comment || evidenceText.trim();
   const type = bugTypeOptions.find((item) => item.value === draft.bugType) ?? bugTypeOptions[0]!;
   const targetLabel = target?.label || target?.text || target?.tagName || '当前标注区域';
   const currentTitle = draft.title.trim();
   const currentActual = draft.actual.trim();
   const autoFilledFromOldComment = Boolean(comment && currentTitle && currentActual && currentTitle === currentActual);
-  const title = autoFilledFromOldComment || !currentTitle ? (comment ? comment.replace(/\s+/g, ' ').slice(0, 44) : `${type.label}：${targetLabel}`.slice(0, 44)) : currentTitle;
-  const actual = autoFilledFromOldComment || !currentActual ? comment : currentActual;
+  const title = autoFilledFromOldComment || !currentTitle ? (fallbackText ? fallbackText.replace(/\s+/g, ' ').slice(0, 44) : `${type.label}：${targetLabel}`.slice(0, 44)) : currentTitle;
+  const actual = autoFilledFromOldComment || !currentActual ? (fallbackText || `${targetLabel} 存在${type.label}。`) : currentActual;
   const expected = draft.expected.trim() || type.expected;
   return { ...draft, title, actual, expected };
 }
