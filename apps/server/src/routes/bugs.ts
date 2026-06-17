@@ -19,7 +19,7 @@ export function bugsRouter(context: ServerContext): Router {
     const rows = status && status !== 'all'
       ? all(context.database.db, 'SELECT * FROM bugs WHERE status = ? ORDER BY created_at DESC', [status])
       : all(context.database.db, 'SELECT * FROM bugs ORDER BY created_at DESC');
-    res.json({ bugs: rows.map((row) => ({ ...mapBug(row), annotationCount: countRelations(context, String(row.id)), assetCount: countAssets(context, String(row.id)) })) });
+    res.json({ bugs: rows.map((row) => ({ ...mapBug(row), projectSnapshot: projectSnapshotForBug(context, row), annotationCount: countRelations(context, String(row.id)), assetCount: countAssets(context, String(row.id)) })) });
   });
 
   router.post('/api/bugs', asyncHandler(async (req, res) => {
@@ -165,9 +165,13 @@ async function bugDetail(context: ServerContext, id: string) {
     return capture ? mapCapture(capture) : undefined;
   }).filter(Boolean);
   const assets = await assetsForBug(context, id);
-  const session = first(context.database.db, 'SELECT * FROM sessions WHERE id = ?', [String(bug.session_id)]);
-  const projectSnapshot = session ? parseJson(session.project_snapshot_json, undefined) : undefined;
-  return { bug: { ...mapBug(bug), annotationCount: annotations.length, assetCount: assets.length }, annotations, captures, assets, projectSnapshot };
+  const projectSnapshot = projectSnapshotForBug(context, bug);
+  return { bug: { ...mapBug(bug), projectSnapshot, annotationCount: annotations.length, assetCount: assets.length }, annotations, captures, assets, projectSnapshot };
+}
+
+function projectSnapshotForBug(context: ServerContext, bug: Row) {
+  const session = first(context.database.db, 'SELECT project_snapshot_json FROM sessions WHERE id = ?', [String(bug.session_id)]);
+  return session ? parseJson(session.project_snapshot_json, undefined) : undefined;
 }
 
 async function assetsForBug(context: ServerContext, id: string) {

@@ -321,6 +321,7 @@ function normalizeProjectSnapshot(value: unknown): ProjectSnapshot | undefined {
       env: String(input.domain.env || 'unknown'),
       status: String(input.domain.status || 'unknown')
     };
+    if (input.domain.activeBranch) snapshot.domain.activeBranch = String(input.domain.activeBranch);
     if (input.domain.matchedHost) snapshot.domain.matchedHost = String(input.domain.matchedHost);
   }
   return snapshot;

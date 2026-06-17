@@ -53,6 +53,7 @@ export const projectSnapshotSchema = z.object({
     url: z.string().url(),
     env: z.string(),
     status: z.string(),
+    activeBranch: z.string().optional(),
     matchedHost: z.string().optional()
   }).optional()
 });
@@ -166,6 +167,7 @@ export const markitBugSchema = z.object({
   primaryCaptureId: z.string().optional(),
   tags: z.array(z.string()),
   references: z.array(bugReferenceSchema),
+  projectSnapshot: projectSnapshotSchema.optional(),
   exportPath: z.string().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()

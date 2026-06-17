@@ -21,8 +21,12 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('保存为一个 Bug');
     expect(source).toContain('data-testid="url-input"');
     expect(source).toContain('Project Catalog');
-    expect(source).toContain('data-testid="catalog-project-select"');
+    expect(source).toContain('testId="catalog-project-select"');
     expect(source).toContain('直接输入 URL 仍可测试');
+    expect(source).toContain('SearchableSelect');
+    expect(source).toContain('mk-project-context');
+    expect(source).toContain('保存归属');
+    expect(source).toContain('className="mk-panel-section mk-meta-list" open');
     expect(source).toContain('projectSnapshot');
     expect(source).toContain('绑定域名');
     expect(source).not.toMatch(/ChatComposer|project\/run/i);

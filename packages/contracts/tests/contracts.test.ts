@@ -55,7 +55,8 @@ const projectSnapshot = {
     host: 'demo.example.com',
     url: 'https://demo.example.com',
     env: 'prod',
-    status: 'active'
+    status: 'active',
+    activeBranch: 'release-1.2.3'
   }
 };
 
@@ -123,6 +124,7 @@ describe('core DTO contracts', () => {
       primaryCaptureId: 'cap_1',
       tags: [],
       references: [{ kind: 'design', url: 'https://figma.com/file/mock', label: 'Figma' }],
+      projectSnapshot,
       createdAt: now,
       updatedAt: now
     }).severity).toBe('P1');
