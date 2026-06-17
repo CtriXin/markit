@@ -63,7 +63,14 @@ API：
 - `GET /api/catalog/domains?projectId=...`
 - `GET /api/catalog/resolve?url=...`
 
-创建 session 时 Markit 会保存 `projectSnapshot`。它会固定项目名、域名、repo、branch、assignee/labels 和 catalog 生成时间，后续 catalog 更新不会改写历史 session / bug export。Bug 导出的 `bug.md` / `bug.json` 会带上对应项目信息，方便后续发布 GitLab Issue。批量 `挂到 Wiki Issue 草稿` 当前默认 dry-run 到统一 Hub `ptc/fe/ptc-wiki`，业务 repo / issue project / branch / assignee suggestion 会保留在 issue body 和 `.markit/issue-drafts/*` payload 中。`真实挂 Wiki Issue` 会调用 GitLab API 创建到 `ptc/fe/ptc-wiki`，返回 GitLab `web_url` 和 `/-/work_items/:iid` 路径；无项目绑定的 Bug 也进入同一 Hub，并带 `Binding Status: unbound` 与 `unbound-project` label。真实挂载会先上传 annotated screenshot、crop 和对比截图到 GitLab project uploads，再把返回的 Markdown 写进 issue body；如果 catalog 没配置 `defaultAssignee`，会默认 assign 给当前 GitLab 登录用户；本地 `.markit/issue-drafts/*/submitted.json` 会用于防止同一 Bug 重复创建。
+创建 session 时 Markit 会保存 `projectSnapshot`。它会固定项目名、域名、repo、branch、assignee/labels 和 catalog 生成时间，后续 catalog 更新不会改写历史 session / bug export。Bug 导出的 `bug.md` / `bug.json` 会带上对应项目信息，方便后续发布 GitLab Issue。批量 `挂到 Wiki Issue 草稿` 当前默认 dry-run 到统一 Hub `ptc/fe/ptc-wiki`，业务 repo / issue project / branch / assignee suggestion 会保留在 issue body 和 `.markit/issue-drafts/*` payload 中。`真实挂 Wiki Issue` 会调用 GitLab API 创建到 `ptc/fe/ptc-wiki`，返回 GitLab `web_url` 和 `/-/work_items/:iid` 路径；无项目绑定的 Bug 也进入同一 Hub，并带 `Binding Status: unbound` 与 `unbound-project` label。真实挂载会先上传 annotated screenshot、crop 和对比截图到 GitLab project uploads，再把返回的 Markdown 写进 issue body；本地 `.markit/issue-drafts/*/submitted.json` 会用于防止同一 Bug 重复创建。
+
+负责人选择顺序已经留好扩展口：
+
+- 批量提交请求里的 `assignees: ["songxin", "qauser"]` 优先，可在 Bug 列表工具栏临时输入，支持多人。
+- 其次使用 catalog / `projectSnapshot.project.defaultAssignees[]`，兼容旧的 `defaultAssignee`。
+- 都没有时，真实提交会读取当前 GitLab 登录用户并默认 assign 给自己。
+- 后续如果接 service / 绑定关系，只要把查询结果转成同一个 `assignees[]` 即可，不需要改 GitLab submit 主流程。
 
 真实提交默认 `MARKIT_GITLAB_AUTH=auto`：优先使用 `MARKIT_GITLAB_TOKEN`，没有 token 时会调用本机 `glab api` 登录态。像 GitHub `gh` 一样，先登录一次即可：
 

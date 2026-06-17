@@ -20,13 +20,13 @@ type DraftAsset = { id: string; kind: 'pasted-screenshot' | 'uploaded-screenshot
 type QuickComment = { annotationId: string; captureId: string; rect: Rect; text: string };
 type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; projectSnapshot?: ProjectSnapshot; annotationCount?: number; assetCount?: number; exportPath?: string; issueSubmission?: IssueSubmission; createdAt?: string; updatedAt?: string };
 type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; assets: BugAsset[]; projectSnapshot?: ProjectSnapshot };
-type IssueSubmission = { bugId: string; title: string; projectPath?: string; iid?: number; id?: number; workItemUrl: string; webUrl: string; reused?: boolean; synced?: boolean; remoteEvidenceCount?: number; uploadedEvidence?: Array<{ filePath: string; markdown: string; assetUrl?: string }> };
+type IssueSubmission = { bugId: string; title: string; projectPath?: string; iid?: number; id?: number; workItemUrl: string; webUrl: string; assignee?: string; assignees?: string[]; assigneeResolved?: boolean; reused?: boolean; synced?: boolean; remoteEvidenceCount?: number; uploadedEvidence?: Array<{ filePath: string; markdown: string; assetUrl?: string }> };
 type IssueSubmitResponse = { count: number; createdCount?: number; skippedCount?: number; syncedCount?: number; duplicate?: boolean; submissions: IssueSubmission[]; submitPath: string };
 type IssueUiState = { status: 'submitting' | 'submitted' | 'reused' | 'synced' | 'error'; text?: string; submission?: IssueSubmission };
 type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
 type CatalogStatus = { schema: 'markit.catalog.status.v1'; enabled: boolean; root: string; reason?: string; generatedAt?: string; projectCount?: number; domainCount?: number; source?: { pendingAssociations?: number }; integration?: { syncPolicy?: string } };
-type CatalogProject = { id: string; name: string; status: string; aliases: string[]; domainCount: number; activeDomainCount: number; pendingDomainCount: number; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; labels?: string[]; testing?: { enabled: boolean; defaultViewport: string; viewports: string[] }; confidence?: number };
-type CatalogDomain = { host: string; url: string; projectId: string; projectName: string; env: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; defaultAssignee?: string; confidence?: number };
+type CatalogProject = { id: string; name: string; status: string; aliases: string[]; domainCount: number; activeDomainCount: number; pendingDomainCount: number; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; defaultAssignees?: string[]; labels?: string[]; testing?: { enabled: boolean; defaultViewport: string; viewports: string[] }; confidence?: number };
+type CatalogDomain = { host: string; url: string; projectId: string; projectName: string; env: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; defaultAssignee?: string; defaultAssignees?: string[]; confidence?: number };
 type CatalogResolveResult = { status: CatalogStatus; input: string; hostname?: string; matched: boolean; matchedHost?: string; reason?: string; domain?: CatalogDomain; project?: CatalogProject };
 type ComboOption = { value: string; label: string; meta?: string; badge?: string; searchText: string };
 type ProjectSnapshot = {
@@ -35,8 +35,8 @@ type ProjectSnapshot = {
   capturedAt: string;
   catalogRoot?: string;
   catalogGeneratedAt?: string;
-  project: { id: string; name: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; labels?: string[]; confidence?: number };
-  domain?: { host: string; url: string; env: string; status: string; activeBranch?: string; matchedHost?: string };
+  project: { id: string; name: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; defaultAssignees?: string[]; labels?: string[]; confidence?: number };
+  domain?: { host: string; url: string; env: string; status: string; activeBranch?: string; matchedHost?: string; defaultAssignee?: string; defaultAssignees?: string[] };
 };
 type Session = { id: string; sourceUrl: string; currentUrl: string; title: string; viewport: Viewport; projectSnapshot?: ProjectSnapshot; sessionVersion: number; createdAt?: string };
 
@@ -687,19 +687,21 @@ export function App() {
     return body;
   }
 
-  async function draftGitLabIssues(bugIds: string[]) {
+  async function draftGitLabIssues(bugIds: string[], assignees: string[] = []) {
     if (!bugIds.length) return { count: 0, draftDir: '', jsonPath: '', markdownPath: '' };
-    const body = await api<{ count: number; draftDir: string; jsonPath: string; markdownPath: string }>('/api/bugs/issue-draft', { method: 'POST', body: JSON.stringify({ bugIds }) });
+    const payload = assignees.length ? { bugIds, assignees } : { bugIds };
+    const body = await api<{ count: number; draftDir: string; jsonPath: string; markdownPath: string }>('/api/bugs/issue-draft', { method: 'POST', body: JSON.stringify(payload) });
     setMessage(`已生成 ${body.count} 个 ptc-wiki GitLab Issue 草稿：${body.markdownPath}`);
     await refreshBugs();
     if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
     return body;
   }
 
-  async function submitGitLabIssues(bugIds: string[], signal?: AbortSignal) {
+  async function submitGitLabIssues(bugIds: string[], signal?: AbortSignal, assignees: string[] = []) {
     if (!bugIds.length) return { count: 0, submissions: [], submitPath: '' };
     try {
-      const init: RequestInit = { method: 'POST', body: JSON.stringify({ bugIds }) };
+      const payload = assignees.length ? { bugIds, assignees } : { bugIds };
+      const init: RequestInit = { method: 'POST', body: JSON.stringify(payload) };
       if (signal) init.signal = signal;
       const body = await api<IssueSubmitResponse>('/api/bugs/issue-submit', init);
       const firstUrl = body.submissions[0]?.workItemUrl ?? body.submissions[0]?.webUrl ?? body.submitPath;
@@ -1884,14 +1886,16 @@ type BugProjectGroup = {
 
 type BulkActionState = { status: 'idle' | 'running' | 'success' | 'error' | 'stopped'; action?: 'export' | 'draft' | 'submit'; text: string; detail?: string; links?: Array<{ label: string; href: string }> };
 
-function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; bulkExportBugs: (ids: string[]) => Promise<{ count: number; exports: Array<{ bugId: string; exportPath: string }> }>; draftGitLabIssues: (ids: string[]) => Promise<{ count: number; markdownPath: string }>; submitGitLabIssues: (ids: string[], signal?: AbortSignal) => Promise<IssueSubmitResponse>; deleteBug: (id: string) => Promise<void> }) {
+function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; bulkExportBugs: (ids: string[]) => Promise<{ count: number; exports: Array<{ bugId: string; exportPath: string }> }>; draftGitLabIssues: (ids: string[], assignees?: string[]) => Promise<{ count: number; markdownPath: string }>; submitGitLabIssues: (ids: string[], signal?: AbortSignal, assignees?: string[]) => Promise<IssueSubmitResponse>; deleteBug: (id: string) => Promise<void> }) {
   const groups = useMemo(() => groupBugsByProject(props.bugs), [props.bugs]);
   const [selectedProjectKey, setSelectedProjectKey] = useState('');
   const [selectedBugIds, setSelectedBugIds] = useState<string[]>([]);
   const [bulkAction, setBulkAction] = useState<BulkActionState>({ status: 'idle', text: '' });
   const [issueUiByBugId, setIssueUiByBugId] = useState<Record<string, IssueUiState>>({});
+  const [bulkAssigneeText, setBulkAssigneeText] = useState('');
   const submitAbortRef = useRef<AbortController | null>(null);
   const selectedBug = props.bugs.find((bug) => bug.id === props.selectedBugId);
+  const bulkAssignees = useMemo(() => parseAssigneeInput(bulkAssigneeText), [bulkAssigneeText]);
 
   useEffect(() => {
     if (selectedBug) {
@@ -1947,6 +1951,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
   const selectedForIssueSubmit = selectedForAction.filter((bugId) => !issueUiHasSubmission(issueUiByBugId[bugId]) && issueUiByBugId[bugId]?.status !== 'submitting' && !props.bugs.find((bug) => bug.id === bugId)?.issueSubmission);
   const actionRunning = bulkAction.status === 'running';
   const issueSubmitLabel = actionRunning ? '处理中...' : selectedForAction.length && !selectedForIssueSubmit.length ? '返回已有 Issue' : '真实挂 Wiki Issue';
+  const assigneeHint = bulkAssignees.length ? `负责人：${bulkAssignees.join(', ')}` : '负责人：按项目绑定；没有绑定时默认当前 GitLab 用户';
 
   const runBulkExport = async () => {
     if (!selectedForAction.length || actionRunning) return;
@@ -1963,7 +1968,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
     if (!selectedForAction.length || actionRunning) return;
     setBulkAction({ status: 'running', action: 'draft', text: `正在生成 ${selectedForAction.length} 个 Wiki Issue 草稿...`, detail: '状态：生成草稿中' });
     try {
-      const result = await props.draftGitLabIssues(selectedForAction);
+      const result = await props.draftGitLabIssues(selectedForAction, bulkAssignees);
       setBulkAction({ status: 'success', action: 'draft', text: `已完成：生成 ${result.count} 个草稿：${result.markdownPath}`, detail: '状态：完成' });
     } catch (error) {
       setBulkAction({ status: 'error', action: 'draft', text: `已停止：${error instanceof Error ? error.message : String(error)}`, detail: '状态：失败停止' });
@@ -1987,9 +1992,9 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
       for (const bugId of selectedForIssueSubmit) next[bugId] = { status: 'submitting', text: '正在提交到 Wiki Issue...' };
       return next;
     });
-    setBulkAction({ status: 'running', action: 'submit', text: `正在上传截图并真实挂载 ${selectedForIssueSubmit.length} 个 Wiki Issue...`, detail: `状态：loading；已跳过 ${selectedForAction.length - selectedForIssueSubmit.length} 个已挂载 Bug。步骤：导出 evidence -> 上传截图资源 -> 创建/同步 Work Item` });
+    setBulkAction({ status: 'running', action: 'submit', text: `正在上传截图并真实挂载 ${selectedForIssueSubmit.length} 个 Wiki Issue...`, detail: `状态：loading；${assigneeHint}；已跳过 ${selectedForAction.length - selectedForIssueSubmit.length} 个已挂载 Bug。步骤：导出 evidence -> 上传截图资源 -> 创建/同步 Work Item` });
     try {
-      const result = await props.submitGitLabIssues(selectedForIssueSubmit, controller.signal);
+      const result = await props.submitGitLabIssues(selectedForIssueSubmit, controller.signal, bulkAssignees);
       const created = result.createdCount ?? result.count;
       const skipped = result.skippedCount ?? result.submissions.filter((item) => item.reused).length;
       const synced = result.syncedCount ?? result.submissions.filter((item) => item.synced).length;
@@ -2060,6 +2065,17 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
           <div className="mk-bulk-toolbar" data-testid="bug-bulk-toolbar">
             <label><input type="checkbox" checked={allVisibleSelected} disabled={!visibleBugIds.length || actionRunning} onChange={toggleCurrentProject} />全选当前项目</label>
             <span>{visibleSelectedIds.length ? `已选 ${visibleSelectedIds.length} 个` : '未选择时默认处理当前项目全部 Bug'}</span>
+            <label className="mk-assignee-field">
+              <span>负责人（可选，多人用逗号）</span>
+              <input
+                className="mk-assignee-input"
+                data-testid="bulk-assignees"
+                value={bulkAssigneeText}
+                disabled={actionRunning}
+                placeholder="默认项目绑定 / 当前 GitLab 用户；例：songxin, zhangsan"
+                onChange={(event) => setBulkAssigneeText(event.target.value)}
+              />
+            </label>
             <button data-testid="bulk-export" disabled={!selectedForAction.length || actionRunning} onClick={() => void runBulkExport()}>批量导出</button>
             <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueDraft()}>挂到 Wiki Issue 草稿</button>
             <button data-testid="bulk-issue-submit" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueSubmit()}>{issueSubmitLabel}</button>
@@ -2115,13 +2131,25 @@ function IssueStatusPill({ submission, state, detail = false }: { submission: Is
   const href = effectiveSubmission.workItemUrl || effectiveSubmission.webUrl;
   const evidenceCount = issueEvidenceCount(effectiveSubmission);
   const status = state?.status === 'synced' || effectiveSubmission.synced ? '已补图' : state?.status === 'reused' || effectiveSubmission.reused ? '已存在' : '已挂载';
+  const assigneeText = issueAssigneeText(effectiveSubmission);
+  const meta = [assigneeText, evidenceCount ? `截图资源 ${evidenceCount} 张` : '等待截图同步'].filter(Boolean).join(' · ');
   return (
     <div className={detail ? 'mk-issue-pill is-linked is-detail' : 'mk-issue-pill is-linked'} data-testid="bug-issue-status">
       <strong>Wiki Issue</strong>
       <a href={href} target="_blank" rel="noreferrer">{status}{effectiveSubmission.iid ? ` #${effectiveSubmission.iid}` : ''}</a>
-      <span>{evidenceCount ? `截图资源 ${evidenceCount} 张` : '等待截图同步'}</span>
+      <span>{meta}</span>
     </div>
   );
+}
+
+function parseAssigneeInput(value: string): string[] {
+  return [...new Set(value.split(/[,，、;；\n]+/).map((item) => item.trim()).filter(Boolean))];
+}
+
+function issueAssigneeText(submission: IssueSubmission): string {
+  const assignees = submission.assignees?.length ? submission.assignees : parseAssigneeInput(submission.assignee ?? '');
+  if (!assignees.length) return '';
+  return assignees.length > 1 ? `多人 ${assignees.length}` : `负责人 ${assignees[0]}`;
 }
 
 function issueUiHasSubmission(state: IssueUiState | undefined): boolean {
@@ -2421,12 +2449,15 @@ function snapshotFromCatalog(status: CatalogStatus, project: CatalogProject, dom
   if (project.activeBranch) snapshot.project.activeBranch = project.activeBranch;
   if (project.issueProjectPath) snapshot.project.issueProjectPath = project.issueProjectPath;
   if (project.defaultAssignee) snapshot.project.defaultAssignee = project.defaultAssignee;
+  if (project.defaultAssignees?.length) snapshot.project.defaultAssignees = project.defaultAssignees;
   if (project.labels?.length) snapshot.project.labels = project.labels;
   if (typeof project.confidence === 'number') snapshot.project.confidence = project.confidence;
   if (domain) {
     snapshot.domain = { host: domain.host, url: domain.url, env: domain.env, status: domain.status };
     if (domain.activeBranch) snapshot.domain.activeBranch = domain.activeBranch;
     if (matchedHost) snapshot.domain.matchedHost = matchedHost;
+    if (domain.defaultAssignee) snapshot.domain.defaultAssignee = domain.defaultAssignee;
+    if (domain.defaultAssignees?.length) snapshot.domain.defaultAssignees = domain.defaultAssignees;
   }
   return snapshot;
 }

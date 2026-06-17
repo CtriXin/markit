@@ -45,6 +45,7 @@ export const projectSnapshotSchema = z.object({
     activeBranch: z.string().optional(),
     issueProjectPath: z.string().optional(),
     defaultAssignee: z.string().optional(),
+    defaultAssignees: z.array(z.string()).optional(),
     labels: z.array(z.string()).optional(),
     confidence: z.number().min(0).max(1).optional()
   }),
@@ -54,7 +55,9 @@ export const projectSnapshotSchema = z.object({
     env: z.string(),
     status: z.string(),
     activeBranch: z.string().optional(),
-    matchedHost: z.string().optional()
+    matchedHost: z.string().optional(),
+    defaultAssignee: z.string().optional(),
+    defaultAssignees: z.array(z.string()).optional()
   }).optional()
 });
 export type ProjectSnapshot = z.infer<typeof projectSnapshotSchema>;

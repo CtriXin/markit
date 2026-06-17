@@ -25,6 +25,7 @@ type IssueProjectSnapshot = {
     gitlabPath?: string;
     activeBranch?: string;
     defaultAssignee?: string;
+    defaultAssignees?: string[];
     labels?: string[];
   };
   domain?: {
@@ -33,10 +34,16 @@ type IssueProjectSnapshot = {
     env?: string;
     status?: string;
     activeBranch?: string;
+    defaultAssignee?: string;
+    defaultAssignees?: string[];
   };
 };
 
 type IssuePayload = ReturnType<typeof issuePayloadFromDetail>;
+
+type IssueSubmitOptions = {
+  assignees: string[];
+};
 
 type GitLabConfig = {
   baseUrl: string;
@@ -53,6 +60,8 @@ type GitLabIssueResult = {
   webUrl: string;
   workItemUrl: string;
   assignee: string;
+  assignees: string[];
+  assigneeIds?: number[];
   assigneeResolved: boolean;
   labels: string[];
   uploadedEvidence: GitLabUploadResult[];
@@ -117,15 +126,15 @@ export function bugsRouter(context: ServerContext): Router {
   }));
 
   router.post('/api/bugs/issue-draft', asyncHandler(async (req, res) => {
-    const bugIds = bugIdsFromBody(req.body);
-    const draft = await writeIssueDraft(context, bugIds);
+    const { bugIds, options } = issueRequestFromBody(req.body);
+    const draft = await writeIssueDraft(context, bugIds, options);
     await context.database.save();
     res.json(draft);
   }));
 
   router.post('/api/bugs/issue-submit', asyncHandler(async (req, res) => {
-    const bugIds = bugIdsFromBody(req.body);
-    const result = await submitIssueDraft(context, bugIds);
+    const { bugIds, options } = issueRequestFromBody(req.body);
+    const result = await submitIssueDraft(context, bugIds, options);
     await context.database.save();
     res.json(result);
   }));
@@ -236,6 +245,30 @@ function bugIdsFromBody(body: unknown): string[] {
   if (!bugIds.length) throw new MarkitHttpError(400, 'bug_ids_required', 'Select at least one bug');
   if (bugIds.length > 100) throw new MarkitHttpError(400, 'too_many_bugs', 'Bulk actions support at most 100 bugs');
   return bugIds;
+}
+
+function issueRequestFromBody(body: unknown): { bugIds: string[]; options: IssueSubmitOptions } {
+  return {
+    bugIds: bugIdsFromBody(body),
+    options: issueSubmitOptionsFromBody(body)
+  };
+}
+
+function issueSubmitOptionsFromBody(body: unknown): IssueSubmitOptions {
+  const input = body && typeof body === 'object' ? body as { assignee?: unknown; assignees?: unknown } : {};
+  return { assignees: normalizeAssignees(input.assignees ?? input.assignee) };
+}
+
+function normalizeAssignees(value: unknown): string[] {
+  const rawItems = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+  const names = rawItems.flatMap((item) => String(item).split(/[,，、;；\n]+/))
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return [...new Set(names)];
+}
+
+function formatAssignees(assignees: string[]): string {
+  return assignees.join(', ');
 }
 
 function addRelation(context: ServerContext, bugId: string, annotationId: string, sortOrder: number) {
@@ -404,14 +437,14 @@ async function exportBugs(context: ServerContext, bugIds: string[]) {
   return results;
 }
 
-async function writeIssueDraft(context: ServerContext, bugIds: string[]) {
+async function writeIssueDraft(context: ServerContext, bugIds: string[], options: IssueSubmitOptions = { assignees: [] }) {
   const exported = await Promise.all(bugIds.map(async (bugId) => {
     const result = await exportBug(context, bugId);
     const detail = await bugDetail(context, bugId);
     return { result, detail };
   }));
   const issues = exported
-    .map(({ result, detail }) => issuePayloadFromDetail(detail, result.markdown))
+    .map(({ result, detail }) => issuePayloadFromDetail(detail, result.markdown, options))
     .sort(compareIssuePayloads);
   const stamp = nowIso().replace(/[:.]/g, '-');
   const draftDir = join(context.dataDir, 'issue-drafts', stamp);
@@ -430,13 +463,13 @@ async function writeIssueDraft(context: ServerContext, bugIds: string[]) {
   return { mode: 'dry-run', count: issues.length, draftDir, jsonPath, markdownPath, issues };
 }
 
-async function submitIssueDraft(context: ServerContext, bugIds: string[]) {
+async function submitIssueDraft(context: ServerContext, bugIds: string[], options: IssueSubmitOptions = { assignees: [] }) {
   const blocking = bugIds.map((bugId) => issueSubmitLocks.get(bugId)).filter((promise): promise is Promise<unknown> => Boolean(promise));
   if (blocking.length) {
     await Promise.allSettled(blocking);
-    return submitIssueDraft(context, bugIds);
+    return submitIssueDraft(context, bugIds, options);
   }
-  const promise = submitIssueDraftUnlocked(context, bugIds);
+  const promise = submitIssueDraftUnlocked(context, bugIds, options);
   for (const bugId of bugIds) issueSubmitLocks.set(bugId, promise);
   try {
     return await promise;
@@ -447,12 +480,12 @@ async function submitIssueDraft(context: ServerContext, bugIds: string[]) {
   }
 }
 
-async function submitIssueDraftUnlocked(context: ServerContext, bugIds: string[]) {
+async function submitIssueDraftUnlocked(context: ServerContext, bugIds: string[], options: IssueSubmitOptions) {
   const existing = await existingSubmissionsForBugs(context, bugIds);
   if (bugIds.every((bugId) => existing.has(bugId))) return await writeExistingIssueSubmit(context, bugIds, existing);
   const config = gitLabConfigFromEnv(process.env);
   const pendingBugIds = bugIds.filter((bugId) => !existing.has(bugId));
-  const draft = await writeIssueDraft(context, bugIds);
+  const draft = await writeIssueDraft(context, bugIds, options);
   const issuesToSubmit = draft.issues.filter((issue) => pendingBugIds.includes(issue.bugId));
   const issuesToSync = draft.issues.filter((issue) => existing.has(issue.bugId));
   const createdSubmissions = await submitGitLabIssues(issuesToSubmit, config);
@@ -600,15 +633,40 @@ async function existingSubmissionsForBugs(context: ServerContext, bugIds: string
   for (const dir of dirs) {
     const path = join(draftsDir, dir, 'submitted.json');
     try {
-      const payload = parseJson<{ submissions?: GitLabIssueResult[] }>(await readFile(path, 'utf8'), {});
+      const payload = parseJson<{ submissions?: Array<Partial<GitLabIssueResult>> }>(await readFile(path, 'utf8'), {});
       for (const submission of payload.submissions ?? []) {
-        if (wanted.has(submission.bugId)) submissions.set(submission.bugId, { ...submission, uploadedEvidence: submission.uploadedEvidence ?? [] });
+        const normalized = normalizeGitLabIssueResult(submission);
+        if (wanted.has(normalized.bugId)) submissions.set(normalized.bugId, normalized);
       }
     } catch {
       // Ignore partial or legacy draft folders.
     }
   }
   return submissions;
+}
+
+function normalizeGitLabIssueResult(submission: Partial<GitLabIssueResult>): GitLabIssueResult {
+  const assignees = normalizeAssignees(submission.assignees ?? submission.assignee);
+  const assigneeIds = Array.isArray(submission.assigneeIds)
+    ? submission.assigneeIds.map((id) => Number(id)).filter((id) => Number.isFinite(id))
+    : undefined;
+  const normalized: GitLabIssueResult = {
+    ...(submission as GitLabIssueResult),
+    bugId: String(submission.bugId ?? ''),
+    title: String(submission.title ?? ''),
+    projectPath: String(submission.projectPath ?? DEFAULT_ISSUE_HUB_PROJECT_PATH),
+    iid: Number(submission.iid ?? 0),
+    id: Number(submission.id ?? 0),
+    webUrl: String(submission.webUrl ?? ''),
+    workItemUrl: String(submission.workItemUrl ?? submission.webUrl ?? ''),
+    assignee: formatAssignees(assignees) || String(submission.assignee ?? ''),
+    assignees,
+    assigneeResolved: Boolean(submission.assigneeResolved),
+    labels: submission.labels ?? [],
+    uploadedEvidence: submission.uploadedEvidence ?? []
+  };
+  if (assigneeIds?.length) normalized.assigneeIds = assigneeIds;
+  return normalized;
 }
 
 function gitLabConfigFromEnv(env: NodeJS.ProcessEnv): GitLabConfig {
@@ -628,18 +686,20 @@ async function submitGitLabIssues(issues: IssuePayload[], config: GitLabConfig):
   let currentUser: GitLabCurrentUser | undefined;
   const results: GitLabIssueResult[] = [];
   for (const issue of issues) {
-    const configuredAssignee = issue.assignee.trim();
-    const currentAssignee = configuredAssignee ? undefined : (currentUser ??= await resolveCurrentGitLabUser(config));
-    const assigneeUsername = configuredAssignee || currentAssignee?.username || '';
-    const assigneeId = configuredAssignee ? await resolveGitLabUserId(config, configuredAssignee, assigneeCache) : currentAssignee?.id;
+    const configuredAssignees = issue.assignees.length ? issue.assignees : normalizeAssignees(issue.assignee);
+    const currentAssignee = configuredAssignees.length ? undefined : (currentUser ??= await resolveCurrentGitLabUser(config));
+    const assignees = configuredAssignees.length ? configuredAssignees : currentAssignee?.username ? [currentAssignee.username] : [];
+    const assigneeIds = configuredAssignees.length
+      ? await resolveGitLabUserIds(config, configuredAssignees, assigneeCache)
+      : currentAssignee?.id ? [currentAssignee.id] : [];
     const uploadedEvidence = await uploadIssueEvidence(config, issue);
-    const description = withUploadedEvidence(withResolvedAssignee(issue.description, configuredAssignee, assigneeUsername), uploadedEvidence);
+    const description = withUploadedEvidence(withResolvedAssignee(issue.description, configuredAssignees, assignees), uploadedEvidence);
     const body: Record<string, unknown> = {
       title: issue.title,
       description,
       labels: issue.labels.join(',')
     };
-    if (assigneeId) body.assignee_ids = [assigneeId];
+    if (assigneeIds.length) body.assignee_ids = assigneeIds;
     const created = await gitLabRequest<{ id: number; iid: number; web_url?: string }>(
       config,
       `/api/v4/projects/${encodeURIComponent(issue.projectPath)}/issues`,
@@ -654,8 +714,10 @@ async function submitGitLabIssues(issues: IssuePayload[], config: GitLabConfig):
       id: created.id,
       webUrl,
       workItemUrl: `${config.baseUrl}/${issue.projectPath}/-/work_items/${created.iid}`,
-      assignee: assigneeUsername,
-      assigneeResolved: Boolean(assigneeId),
+      assignee: formatAssignees(assignees),
+      assignees,
+      assigneeIds,
+      assigneeResolved: Boolean(assignees.length) && assigneeIds.length === assignees.length,
       labels: issue.labels,
       uploadedEvidence
     });
@@ -721,9 +783,18 @@ function withUploadedEvidence(description: string, uploaded: GitLabUploadResult[
   return `${description}\n\n## Screenshots\n\n${screenshots}\n`;
 }
 
-function withResolvedAssignee(description: string, configuredAssignee: string, assigneeUsername: string): string {
-  if (configuredAssignee || !assigneeUsername) return description;
-  return description.replace('- Assignee Suggestion: not configured', `- Assignee Suggestion: ${assigneeUsername} (default current GitLab user)`);
+function withResolvedAssignee(description: string, configuredAssignees: string[], assignees: string[]): string {
+  if (configuredAssignees.length || !assignees.length) return description;
+  return description.replace('- Assignee Suggestion: not configured', `- Assignee Suggestion: ${formatAssignees(assignees)} (default current GitLab user)`);
+}
+
+async function resolveGitLabUserIds(config: GitLabConfig, usernames: string[], cache: Map<string, number | undefined>): Promise<number[]> {
+  const ids: number[] = [];
+  for (const username of usernames) {
+    const userId = await resolveGitLabUserId(config, username, cache);
+    if (userId && !ids.includes(userId)) ids.push(userId);
+  }
+  return ids;
 }
 
 async function resolveGitLabUserId(config: GitLabConfig, username: string, cache: Map<string, number | undefined>): Promise<number | undefined> {
@@ -897,7 +968,7 @@ function glabErrorMessage(hostname: string, output: string, code = 'gitlab_submi
   return new MarkitHttpError(502, code, `glab api failed: ${output.trim().slice(0, 240) || 'unknown error'}`);
 }
 
-function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, markdown: string) {
+function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, markdown: string, options: IssueSubmitOptions = { assignees: [] }) {
   const bug = detail.bug;
   const snapshot = detail.projectSnapshot as IssueProjectSnapshot | undefined;
   const project = snapshot?.project;
@@ -907,6 +978,10 @@ function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, m
   const sourceProjectPath = project?.gitlabPath ?? project?.issueProjectPath ?? '';
   const bindingStatus = project ? 'bound' : 'unbound';
   const labels = [...new Set([...(project?.labels ?? ['markit', 'bug']), bindingStatus === 'unbound' ? 'unbound-project' : '', bug.severity, domain].filter(Boolean))];
+  const domainAssignees = snapshot?.domain?.defaultAssignees?.length ? normalizeAssignees(snapshot.domain.defaultAssignees) : normalizeAssignees(snapshot?.domain?.defaultAssignee);
+  const projectAssignees = project?.defaultAssignees?.length ? normalizeAssignees(project.defaultAssignees) : normalizeAssignees(project?.defaultAssignee);
+  const catalogAssignees = domainAssignees.length ? domainAssignees : projectAssignees;
+  const assignees = options.assignees.length ? options.assignees : catalogAssignees;
   const issue = {
     bugId: bug.id,
     projectPath: DEFAULT_ISSUE_HUB_PROJECT_PATH,
@@ -917,7 +992,9 @@ function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, m
     projectId: project?.id ?? '',
     projectName: project?.name ?? '',
     branch,
-    assignee: project?.defaultAssignee ?? '',
+    assignee: formatAssignees(assignees),
+    assignees,
+    assigneeSource: options.assignees.length ? 'manual' : assignees.length ? 'catalog' : 'gitlab-current-user',
     labels,
     severity: bug.severity,
     domain,
@@ -957,12 +1034,21 @@ function renderIssueDescription(issue: {
   domain: string;
   branch: string;
   assignee: string;
+  assignees: string[];
+  assigneeSource: string;
   labels: string[];
   exportPath: string;
   sourceUrl: string;
   finalUrl: string;
 }, markdown: string): string {
-  return `## Markit Routing\n\n- Issue Hub: ${issue.projectPath}\n- Binding Status: ${issue.bindingStatus}\n- Markit Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Bound Domain: ${issue.domain}\n- Current Branch: ${issue.branch || 'not configured'}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n- Assignee Suggestion: ${issue.assignee || 'not configured'}\n- Labels: ${issue.labels.join(', ')}\n- Export Path: ${issue.exportPath}\n- Source URL: ${issue.sourceUrl}\n- Final URL: ${issue.finalUrl}\n\n---\n\n${markdown}\n`;
+  return `## Markit Routing\n\n- Issue Hub: ${issue.projectPath}\n- Binding Status: ${issue.bindingStatus}\n- Markit Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Bound Domain: ${issue.domain}\n- Current Branch: ${issue.branch || 'not configured'}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n${renderAssigneeSuggestionLine(issue)}\n- Labels: ${issue.labels.join(', ')}\n- Export Path: ${issue.exportPath}\n- Source URL: ${issue.sourceUrl}\n- Final URL: ${issue.finalUrl}\n\n---\n\n${markdown}\n`;
+}
+
+function renderAssigneeSuggestionLine(issue: { assignee: string; assignees: string[]; assigneeSource: string }): string {
+  if (!issue.assignee) return '- Assignee Suggestion: not configured';
+  const label = issue.assignees.length > 1 ? 'Assignee Suggestions' : 'Assignee Suggestion';
+  const source = issue.assigneeSource === 'manual' ? ' (manual override)' : '';
+  return `- ${label}: ${issue.assignee}${source}`;
 }
 
 function safeHost(value: string): string {

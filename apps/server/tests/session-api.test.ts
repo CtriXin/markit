@@ -363,12 +363,77 @@ describe('session and capture API', () => {
       });
       expect(submitResponse.status).toBe(200);
       const submitBody = await submitResponse.json();
-      expect(submitBody.submissions[0]).toMatchObject({ assignee: 'songxin', assigneeResolved: true });
+      expect(submitBody.submissions[0]).toMatchObject({ assignee: 'songxin', assignees: ['songxin'], assigneeIds: [501], assigneeResolved: true });
       const issueRequest = gitLabApiRequests.find((request) => request.method === 'POST' && request.url.includes('/issues'));
       expect(issueRequest).toBeTruthy();
       const issueBody = JSON.parse(issueRequest?.body || '{}');
       expect(issueBody.assignee_ids).toEqual([501]);
       expect(issueBody.description).toContain('Assignee Suggestion: songxin (default current GitLab user)');
+    } finally {
+      restoreEnv('MARKIT_GITLAB_BASE_URL', previousGitLab.baseUrl);
+      restoreEnv('MARKIT_GITLAB_AUTH', previousGitLab.auth);
+      restoreEnv('MARKIT_GITLAB_TOKEN', previousGitLab.token);
+    }
+  }, 30_000);
+
+  it('lets bulk issue submit override catalog assignees with multiple GitLab users', async () => {
+    const createResponse = await fetch(`${apiBaseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        url: `${fixtureBaseUrl}/index.html`,
+        viewport: { name: 'Desktop 800x500', width: 800, height: 500, deviceScaleFactor: 1 },
+        projectSnapshot
+      })
+    });
+    expect(createResponse.status).toBe(201);
+    const created = await createResponse.json();
+    const bugResponse = await fetch(`${apiBaseUrl}/api/bugs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: created.session.id,
+        title: '手动多人分配',
+        actual: '批量提交时需要临时换负责人。',
+        expected: '请求里的 assignees 应优先于 catalog defaultAssignee。',
+        severity: 'P1',
+        status: 'draft',
+        sourceUrl: created.session.sourceUrl,
+        finalUrl: created.capture.finalUrl,
+        primaryCaptureId: created.capture.id
+      })
+    });
+    expect(bugResponse.status).toBe(201);
+    const bugBody = await bugResponse.json();
+    const previousGitLab = {
+      baseUrl: process.env.MARKIT_GITLAB_BASE_URL,
+      auth: process.env.MARKIT_GITLAB_AUTH,
+      token: process.env.MARKIT_GITLAB_TOKEN
+    };
+    gitLabApiRequests.length = 0;
+    process.env.MARKIT_GITLAB_BASE_URL = fixtureBaseUrl;
+    process.env.MARKIT_GITLAB_AUTH = 'token';
+    process.env.MARKIT_GITLAB_TOKEN = 'test-token';
+    try {
+      const submitResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ bugIds: [bugBody.bug.id], assignees: ['songxin', 'qauser'] })
+      });
+      expect(submitResponse.status).toBe(200);
+      const submitBody = await submitResponse.json();
+      expect(submitBody.submissions[0]).toMatchObject({
+        assignee: 'songxin, qauser',
+        assignees: ['songxin', 'qauser'],
+        assigneeIds: [501, 502],
+        assigneeResolved: true
+      });
+      const issueRequest = gitLabApiRequests.find((request) => request.method === 'POST' && request.url.includes('/issues'));
+      expect(issueRequest).toBeTruthy();
+      const issueBody = JSON.parse(issueRequest?.body || '{}');
+      expect(issueBody.assignee_ids).toEqual([501, 502]);
+      expect(issueBody.description).toContain('Assignee Suggestions: songxin, qauser (manual override)');
+      expect(gitLabApiRequests.some((request) => request.url === '/api/v4/user')).toBe(false);
     } finally {
       restoreEnv('MARKIT_GITLAB_BASE_URL', previousGitLab.baseUrl);
       restoreEnv('MARKIT_GITLAB_AUTH', previousGitLab.auth);
@@ -580,6 +645,16 @@ async function handleGitLabFixture(req: IncomingMessage, res: ServerResponse) {
   res.setHeader('content-type', 'application/json');
   if (req.method === 'GET' && req.url === '/api/v4/user') {
     res.end(JSON.stringify({ id: 501, username: 'songxin', name: '宋鑫' }));
+    return;
+  }
+  if (req.method === 'GET' && req.url?.startsWith('/api/v4/users?')) {
+    const username = new URL(req.url, fixtureBaseUrl).searchParams.get('username') ?? '';
+    const users: Record<string, { id: number; username: string; name: string }> = {
+      songxin: { id: 501, username: 'songxin', name: '宋鑫' },
+      qauser: { id: 502, username: 'qauser', name: 'QA User' },
+      xin: { id: 503, username: 'xin', name: 'Xin' }
+    };
+    res.end(JSON.stringify(users[username] ? [users[username]] : []));
     return;
   }
   if (req.method === 'POST' && req.url?.includes('/uploads')) {

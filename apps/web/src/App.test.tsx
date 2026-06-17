@@ -48,6 +48,10 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('无需重复提交');
     expect(source).toContain('提交中...');
     expect(source).toContain('返回已有 Issue');
+    expect(source).toContain('bulk-assignees');
+    expect(source).toContain('负责人（可选，多人用逗号）');
+    expect(source).toContain('parseAssigneeInput');
+    expect(source).toContain('assignees');
     expect(source).not.toMatch(/ChatComposer|project\/run/i);
   });
 });

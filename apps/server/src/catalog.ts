@@ -41,6 +41,7 @@ export type CatalogProject = {
   activeBranch?: string;
   issueProjectPath?: string;
   defaultAssignee?: string;
+  defaultAssignees?: string[];
   labels?: string[];
   owners?: {
     qa?: string[];
@@ -66,6 +67,7 @@ export type CatalogDomain = {
   gitlabPath?: string;
   activeBranch?: string;
   defaultAssignee?: string;
+  defaultAssignees?: string[];
   source?: string;
   confidence?: number;
 };
@@ -104,6 +106,7 @@ export type ProjectSnapshot = {
     activeBranch?: string;
     issueProjectPath?: string;
     defaultAssignee?: string;
+    defaultAssignees?: string[];
     labels?: string[];
     confidence?: number;
   };
@@ -114,6 +117,8 @@ export type ProjectSnapshot = {
     status: string;
     activeBranch?: string;
     matchedHost?: string;
+    defaultAssignee?: string;
+    defaultAssignees?: string[];
   };
 };
 
@@ -144,7 +149,7 @@ type RawProject = {
   scmp?: { service?: string };
   repo?: { gitlabPath?: string; activeBranch?: string };
   domains?: Array<{ host?: string; env?: string; status?: string; source?: string }>;
-  gitlab?: { issueProjectPath?: string; defaultAssignee?: string; labels?: string[] };
+  gitlab?: { issueProjectPath?: string; defaultAssignee?: string; defaultAssignees?: string[]; labels?: string[] };
   testing?: { enabled?: boolean; defaultViewport?: string; viewports?: string[] };
   owners?: { qa?: string[]; dev?: string[] };
   confidence?: number;
@@ -162,6 +167,7 @@ type RawDomainEntry = {
   gitlabPath?: string;
   activeBranch?: string;
   defaultAssignee?: string;
+  defaultAssignees?: string[];
   env?: string;
   status?: string;
 };
@@ -286,6 +292,7 @@ export function projectSnapshotFromCatalog(input: {
   if (input.project.activeBranch) snapshot.project.activeBranch = input.project.activeBranch;
   if (input.project.issueProjectPath) snapshot.project.issueProjectPath = input.project.issueProjectPath;
   if (input.project.defaultAssignee) snapshot.project.defaultAssignee = input.project.defaultAssignee;
+  if (input.project.defaultAssignees?.length) snapshot.project.defaultAssignees = input.project.defaultAssignees;
   if (input.project.labels?.length) snapshot.project.labels = input.project.labels;
   if (typeof input.project.confidence === 'number') snapshot.project.confidence = input.project.confidence;
   if (input.domain) {
@@ -297,6 +304,8 @@ export function projectSnapshotFromCatalog(input: {
     };
     if (input.domain.activeBranch) snapshot.domain.activeBranch = input.domain.activeBranch;
     if (input.matchedHost) snapshot.domain.matchedHost = input.matchedHost;
+    if (input.domain.defaultAssignee) snapshot.domain.defaultAssignee = input.domain.defaultAssignee;
+    if (input.domain.defaultAssignees?.length) snapshot.domain.defaultAssignees = input.domain.defaultAssignees;
   }
   return snapshot;
 }
@@ -365,6 +374,8 @@ function toProject(raw: RawProject): CatalogProject | undefined {
   if (raw.repo?.activeBranch) project.activeBranch = raw.repo.activeBranch;
   if (raw.gitlab?.issueProjectPath) project.issueProjectPath = raw.gitlab.issueProjectPath;
   if (raw.gitlab?.defaultAssignee) project.defaultAssignee = raw.gitlab.defaultAssignee;
+  const defaultAssignees = normalizeStringList(raw.gitlab?.defaultAssignees?.length ? raw.gitlab.defaultAssignees : raw.gitlab?.defaultAssignee);
+  if (defaultAssignees.length) project.defaultAssignees = defaultAssignees;
   if (raw.gitlab?.labels?.length) project.labels = raw.gitlab.labels;
   if (raw.owners) {
     const owners: CatalogProject['owners'] = {};
@@ -410,6 +421,8 @@ function projectDomains(raw: RawProject): CatalogDomain[] {
     if (raw.repo?.gitlabPath) item.gitlabPath = raw.repo.gitlabPath;
     if (raw.repo?.activeBranch) item.activeBranch = raw.repo.activeBranch;
     if (raw.gitlab?.defaultAssignee) item.defaultAssignee = raw.gitlab.defaultAssignee;
+    const defaultAssignees = normalizeStringList(raw.gitlab?.defaultAssignees?.length ? raw.gitlab.defaultAssignees : raw.gitlab?.defaultAssignee);
+    if (defaultAssignees.length) item.defaultAssignees = defaultAssignees;
     if (domain.source) item.source = domain.source;
     if (typeof raw.confidence === 'number') item.confidence = raw.confidence;
     return item;
@@ -433,10 +446,12 @@ function domainFromIndex(host: string, entry: RawDomainEntry, project?: CatalogP
   const gitlabPath = entry.gitlabPath ?? project?.gitlabPath;
   const activeBranch = entry.activeBranch ?? project?.activeBranch;
   const defaultAssignee = entry.defaultAssignee ?? project?.defaultAssignee;
+  const defaultAssignees = normalizeStringList(entry.defaultAssignees?.length ? entry.defaultAssignees : project?.defaultAssignees ?? defaultAssignee);
   if (scmpService) domain.scmpService = scmpService;
   if (gitlabPath) domain.gitlabPath = gitlabPath;
   if (activeBranch) domain.activeBranch = activeBranch;
   if (defaultAssignee) domain.defaultAssignee = defaultAssignee;
+  if (defaultAssignees.length) domain.defaultAssignees = defaultAssignees;
   if (typeof project?.confidence === 'number') domain.confidence = project.confidence;
   return domain;
 }
@@ -508,6 +523,11 @@ function candidateHosts(hostname: string): string[] {
 
 function normalizeHost(host: string): string {
   return host.trim().toLowerCase().replace(/\.$/, '');
+}
+
+function normalizeStringList(value: string | string[] | undefined): string[] {
+  const rawItems = Array.isArray(value) ? value : typeof value === 'string' ? [value] : [];
+  return [...new Set(rawItems.flatMap((item) => item.split(/[,，、;；\n]+/)).map((item) => item.trim()).filter(Boolean))];
 }
 
 function resolveCatalogPath(base: string, path: string): string {

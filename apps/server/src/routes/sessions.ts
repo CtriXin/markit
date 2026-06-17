@@ -312,6 +312,7 @@ function normalizeProjectSnapshot(value: unknown): ProjectSnapshot | undefined {
   if (project.activeBranch) snapshot.project.activeBranch = String(project.activeBranch);
   if (project.issueProjectPath) snapshot.project.issueProjectPath = String(project.issueProjectPath);
   if (project.defaultAssignee) snapshot.project.defaultAssignee = String(project.defaultAssignee);
+  if (Array.isArray(project.defaultAssignees)) snapshot.project.defaultAssignees = project.defaultAssignees.map(String).filter(Boolean);
   if (Array.isArray(project.labels)) snapshot.project.labels = project.labels.map(String);
   if (typeof project.confidence === 'number') snapshot.project.confidence = project.confidence;
   if (input.domain?.host) {
@@ -323,6 +324,8 @@ function normalizeProjectSnapshot(value: unknown): ProjectSnapshot | undefined {
     };
     if (input.domain.activeBranch) snapshot.domain.activeBranch = String(input.domain.activeBranch);
     if (input.domain.matchedHost) snapshot.domain.matchedHost = String(input.domain.matchedHost);
+    if (input.domain.defaultAssignee) snapshot.domain.defaultAssignee = String(input.domain.defaultAssignee);
+    if (Array.isArray(input.domain.defaultAssignees)) snapshot.domain.defaultAssignees = input.domain.defaultAssignees.map(String).filter(Boolean);
   }
   return snapshot;
 }

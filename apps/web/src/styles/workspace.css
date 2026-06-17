@@ -954,6 +954,25 @@
 .mk-bulk-toolbar input, .mk-card-select input { width: auto; accent-color: var(--mk-blue); }
 .mk-bulk-toolbar span { flex: 1 1 120px; min-width: 0; color: #8f8880; font-size: 12px; }
 .mk-bulk-toolbar button { flex: 0 0 auto; white-space: nowrap; }
+.mk-assignee-field {
+  flex: 1 1 280px;
+  min-width: 220px;
+}
+.mk-assignee-field span {
+  flex: 0 0 auto;
+  color: #d8d1c8;
+}
+.mk-bulk-toolbar .mk-assignee-input {
+  min-width: 180px;
+  flex: 1 1 180px;
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 10px;
+  padding: 6px 9px;
+  color: #f8f4ec;
+  background: #151411;
+}
 .mk-bulk-status {
   display: flex;
   flex: 1 0 100%;
