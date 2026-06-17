@@ -686,7 +686,7 @@ export function App() {
   async function draftGitLabIssues(bugIds: string[]) {
     if (!bugIds.length) return;
     const body = await api<{ count: number; draftDir: string; jsonPath: string; markdownPath: string }>('/api/bugs/issue-draft', { method: 'POST', body: JSON.stringify({ bugIds }) });
-    setMessage(`已生成 ${body.count} 个 GitLab Issue 草稿：${body.markdownPath}`);
+    setMessage(`已生成 ${body.count} 个 ptc-wiki GitLab Issue 草稿：${body.markdownPath}`);
     await refreshBugs();
     if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
   }
@@ -1911,7 +1911,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
             <label><input type="checkbox" checked={allVisibleSelected} disabled={!visibleBugIds.length} onChange={toggleCurrentProject} />全选当前项目</label>
             <span>{visibleSelectedIds.length ? `已选 ${visibleSelectedIds.length} 个` : '未选择时默认处理当前项目全部 Bug'}</span>
             <button data-testid="bulk-export" disabled={!selectedForAction.length} onClick={() => void props.bulkExportBugs(selectedForAction)}>批量导出</button>
-            <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length} onClick={() => void props.draftGitLabIssues(selectedForAction)}>挂 Issue 草稿</button>
+            <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length} onClick={() => void props.draftGitLabIssues(selectedForAction)}>挂到 Wiki Issue 草稿</button>
           </div>
           <div className="mk-bug-list-stack">
             {visibleBugs.map((bug) => (
