@@ -10,6 +10,27 @@ import { mapAnnotation, mapBug, mapBugAsset, mapCapture } from './mappers.js';
 
 const maxAssetBytes = 8 * 1024 * 1024;
 const allowedAssetTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const DEFAULT_ISSUE_HUB_PROJECT_PATH = 'ptc/fe/ptc-wiki';
+
+type IssueProjectSnapshot = {
+  project?: {
+    id?: string;
+    name?: string;
+    status?: string;
+    issueProjectPath?: string;
+    gitlabPath?: string;
+    activeBranch?: string;
+    defaultAssignee?: string;
+    labels?: string[];
+  };
+  domain?: {
+    host?: string;
+    url?: string;
+    env?: string;
+    status?: string;
+    activeBranch?: string;
+  };
+};
 
 export function bugsRouter(context: ServerContext): Router {
   const router = Router();
@@ -329,28 +350,41 @@ async function writeIssueDraft(context: ServerContext, bugIds: string[]) {
 
 function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, markdown: string) {
   const bug = detail.bug;
-  const snapshot = detail.projectSnapshot as { project?: { issueProjectPath?: string; gitlabPath?: string; defaultAssignee?: string; labels?: string[] }; domain?: { host?: string } } | undefined;
+  const snapshot = detail.projectSnapshot as IssueProjectSnapshot | undefined;
   const project = snapshot?.project;
   const domain = snapshot?.domain?.host ?? safeHost(bug.finalUrl);
+  const branch = project?.activeBranch ?? snapshot?.domain?.activeBranch ?? '';
+  const businessProjectPath = project?.issueProjectPath ?? project?.gitlabPath ?? '';
+  const sourceProjectPath = project?.gitlabPath ?? project?.issueProjectPath ?? '';
   const labels = [...new Set([...(project?.labels ?? ['markit', 'bug']), bug.severity, domain].filter(Boolean))];
-  return {
+  const issue = {
     bugId: bug.id,
-    projectPath: project?.issueProjectPath ?? project?.gitlabPath ?? '',
+    projectPath: DEFAULT_ISSUE_HUB_PROJECT_PATH,
+    hubProjectPath: DEFAULT_ISSUE_HUB_PROJECT_PATH,
+    sourceProjectPath,
+    businessProjectPath,
+    projectId: project?.id ?? '',
+    projectName: project?.name ?? '',
+    branch,
     assignee: project?.defaultAssignee ?? '',
     labels,
     severity: bug.severity,
     domain,
+    bugTitle: bug.title,
     title: `[${bug.severity}] ${domain} - ${bug.title}`,
-    description: `${markdown}\n\n---\n\nMarkit export: ${bug.exportPath ?? ''}\n`,
     exportPath: bug.exportPath ?? '',
     sourceUrl: bug.sourceUrl,
     finalUrl: bug.finalUrl
+  };
+  return {
+    ...issue,
+    description: renderIssueDescription(issue, markdown)
   };
 }
 
 function compareIssuePayloads(a: ReturnType<typeof issuePayloadFromDetail>, b: ReturnType<typeof issuePayloadFromDetail>) {
   return a.domain.localeCompare(b.domain)
-    || a.title.localeCompare(b.title)
+    || a.bugTitle.localeCompare(b.bugTitle)
     || severityRank(a.severity) - severityRank(b.severity);
 }
 
@@ -359,7 +393,24 @@ function severityRank(value: string): number {
 }
 
 function renderIssueDraftMarkdown(issues: Array<ReturnType<typeof issuePayloadFromDetail>>) {
-  return `# GitLab Issue Drafts\n\n${issues.map((issue, index) => `## ${index + 1}. ${issue.title}\n\n- Project: ${issue.projectPath || 'not configured'}\n- Assignee: ${issue.assignee || 'not configured'}\n- Labels: ${issue.labels.join(', ')}\n- Export: ${issue.exportPath}\n- Source: ${issue.sourceUrl}\n\n${issue.description}`).join('\n\n---\n\n')}\n`;
+  return `# GitLab Issue Drafts\n\n${issues.map((issue, index) => `## ${index + 1}. ${issue.title}\n\n- Issue Hub: ${issue.projectPath}\n- Business Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n- Domain: ${issue.domain}\n- Branch: ${issue.branch || 'not configured'}\n- Assignee: ${issue.assignee || 'not configured'}\n- Labels: ${issue.labels.join(', ')}\n- Export: ${issue.exportPath}\n- Source: ${issue.sourceUrl}\n\n${issue.description}`).join('\n\n---\n\n')}\n`;
+}
+
+function renderIssueDescription(issue: {
+  projectPath: string;
+  projectId: string;
+  projectName: string;
+  sourceProjectPath: string;
+  businessProjectPath: string;
+  domain: string;
+  branch: string;
+  assignee: string;
+  labels: string[];
+  exportPath: string;
+  sourceUrl: string;
+  finalUrl: string;
+}, markdown: string): string {
+  return `## Markit Routing\n\n- Issue Hub: ${issue.projectPath}\n- Markit Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Bound Domain: ${issue.domain}\n- Current Branch: ${issue.branch || 'not configured'}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n- Assignee Suggestion: ${issue.assignee || 'not configured'}\n- Labels: ${issue.labels.join(', ')}\n- Export Path: ${issue.exportPath}\n- Source URL: ${issue.sourceUrl}\n- Final URL: ${issue.finalUrl}\n\n---\n\n${markdown}\n`;
 }
 
 function safeHost(value: string): string {
@@ -375,7 +426,7 @@ function renderMarkdown(detail: { bug: ReturnType<typeof mapBug>; annotations: u
   const project = detail.projectSnapshot?.project;
   const domain = detail.projectSnapshot?.domain;
   const projectLines = project
-    ? `- Project: ${project.name} (${project.id})\n- Domain: ${domain?.host ?? 'none'}${domain?.status ? ` / ${domain.status}` : ''}\n- Branch: ${project.activeBranch ?? 'none'}\n- GitLab: ${project.issueProjectPath ?? project.gitlabPath ?? 'none'}\n`
+    ? `- Project: ${project.name} (${project.id})\n- Domain: ${domain?.host ?? 'none'}${domain?.status ? ` / ${domain.status}` : ''}\n- Branch: ${project.activeBranch ?? domain?.activeBranch ?? 'none'}\n- Business GitLab: ${project.issueProjectPath ?? project.gitlabPath ?? 'none'}\n`
     : '';
   const references = bug.references.length
     ? `\n## References\n\n${bug.references.map((reference) => `- ${reference.label ?? reference.kind}: ${reference.url}`).join('\n')}\n`

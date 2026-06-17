@@ -162,9 +162,22 @@ describe('session and capture API', () => {
     });
     expect(issueDraftResponse.status).toBe(200);
     const issueDraft = await issueDraftResponse.json();
-    expect(issueDraft).toMatchObject({ mode: 'dry-run', count: 1, issues: [expect.objectContaining({ projectPath: 'ptc/fe/demo', assignee: 'xin' })] });
+    expect(issueDraft).toMatchObject({
+      mode: 'dry-run',
+      count: 1,
+      issues: [expect.objectContaining({
+        projectPath: 'ptc/fe/ptc-wiki',
+        hubProjectPath: 'ptc/fe/ptc-wiki',
+        sourceProjectPath: 'ptc/fe/demo',
+        businessProjectPath: 'ptc/fe/demo',
+        assignee: 'xin'
+      })]
+    });
     expect(await readFile(issueDraft.jsonPath, 'utf8')).toContain('markit.gitlab-issue-draft.v1');
-    expect(await readFile(issueDraft.markdownPath, 'utf8')).toContain('[P2] demo.example.com - 粘贴截图证据');
+    const issueMarkdown = await readFile(issueDraft.markdownPath, 'utf8');
+    expect(issueMarkdown).toContain('[P2] demo.example.com - 粘贴截图证据');
+    expect(issueMarkdown).toContain('- Issue Hub: ptc/fe/ptc-wiki');
+    expect(issueMarkdown).toContain('- Business Repo: ptc/fe/demo');
 
     const deleteResponse = await fetch(`${apiBaseUrl}/api/bugs/${bugBody.bug.id}`, { method: 'DELETE' });
     expect(deleteResponse.status).toBe(200);
