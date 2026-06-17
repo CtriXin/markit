@@ -940,14 +940,11 @@ export function App() {
               </div>
               <div className="mk-toolbar-group mk-input-actions">
                 <input data-testid="action-text" value={actionText} onChange={(event) => setActionText(event.currentTarget.value)} placeholder="选中位置后输入文本" />
-                <button data-testid="type-action" onClick={() => runAction('type', { point: lastPoint, selector: activeTarget?.selector, text: actionText })}>输入</button>
+                <button data-testid="type-action" onClick={() => runAction('type', { point: lastPoint, selector: activeTarget?.selector, text: actionText }, { checkStale: false })}>输入</button>
                 <button onClick={() => runAction('key', { key: 'Enter' })}>回车</button>
               </div>
             </div>
             <div className="mk-canvas-wrap">
-              <div className="mk-canvas-zoom">
-                <ZoomControls zoomMode={zoomMode} zoomPercent={zoomPercent} setFit={() => setZoomMode('fit')} setManualZoomPercent={setManualZoomPercent} zoomIn={zoomIn} zoomOut={zoomOut} />
-              </div>
               <div data-testid="device-board" className={['mk-device-board', previewMode === 'dual' ? 'is-dual' : 'is-single', zoomMode === 'fit' ? 'is-fit' : 'is-manual'].join(' ')} style={boardStyle}>
                 {visibleDevices.map((device) => (
                   <DeviceFrame
@@ -981,6 +978,9 @@ export function App() {
                 ))}
               </div>
             </div>
+            <div className="mk-canvas-zoom">
+              <ZoomControls zoomMode={zoomMode} zoomPercent={zoomPercent} setFit={() => setZoomMode('fit')} setManualZoomPercent={setManualZoomPercent} zoomIn={zoomIn} zoomOut={zoomOut} />
+            </div>
             {busy ? <div className="mk-busy">{busy}</div> : null}
             {message ? <div className="mk-message">{message}</div> : null}
           </section>
@@ -1007,7 +1007,6 @@ function ZoomControls(props: { zoomMode: ZoomMode; zoomPercent: number; setFit: 
   return (
     <div className="mk-zoom-controls" aria-label="缩放控制">
       <button data-testid="zoom-out" onClick={props.zoomOut} aria-label="缩小画布">−</button>
-      <button data-testid="zoom-fit" className={props.zoomMode === 'fit' ? 'is-active' : ''} onClick={props.setFit}>适应</button>
       <select
         data-testid="zoom-preset"
         aria-label="缩放比例"
@@ -1017,9 +1016,11 @@ function ZoomControls(props: { zoomMode: ZoomMode; zoomPercent: number; setFit: 
           else props.setManualZoomPercent(Number(event.currentTarget.value));
         }}
       >
-        <option value="fit">Fit</option>
+        <option value="fit">适应</option>
         {zoomPresets.map((preset) => <option key={preset} value={preset}>{preset}%</option>)}
       </select>
+      <button data-testid="zoom-fit" className="mk-zoom-fit-hidden" onClick={props.setFit} aria-hidden="true" tabIndex={-1}>适应</button>
+      <span data-testid="zoom-label" className="mk-zoom-label-hidden">{props.zoomMode === 'fit' ? 'Fit' : `${props.zoomPercent}%`}</span>
       <button data-testid="zoom-in" onClick={props.zoomIn} aria-label="放大画布">+</button>
     </div>
   );
@@ -1073,6 +1074,8 @@ function DeviceFrame(props: {
             style={layerStyle}
             tabIndex={props.active ? 0 : -1}
             data-live-canvas={props.active ? 'true' : undefined}
+            data-session-id={props.active ? props.sessionId : undefined}
+            data-capture-id={props.active ? capture.id : undefined}
             onPointerDown={props.active ? props.onPointerDown : undefined}
             onPointerMove={props.active ? props.onPointerMove : undefined}
             onPointerUp={props.active ? props.onPointerUp : undefined}

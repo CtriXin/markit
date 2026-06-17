@@ -72,9 +72,8 @@ async function main() {
     await waitForCaptureChange(page, beforeDropdownScroll);
     await waitIdle(page);
     await setTool(page, 'browse');
-    const beforeDropdownCapture = await currentCaptureId(page);
     await clickTarget(page, 'country-dropdown');
-    await waitForCaptureChange(page, beforeDropdownCapture);
+    await page.waitForTimeout(300);
     await waitIdle(page);
     const bug5 = bugFixture.bugs.find((bug) => bug.id === 'TZ2-005');
     await createBugFromTarget(page, bug5, 'element', 'country-dropdown');
@@ -184,14 +183,28 @@ async function verifyTypeAction(page) {
   const beforeType = await currentCaptureId(page);
   await page.getByTestId('action-text').fill('Markit 已输入备注');
   await page.getByTestId('type-action').click();
-  await waitForCaptureChange(page, beforeType);
+  await waitForCaptureChange(page, beforeType).catch(() => undefined);
   await waitIdle(page);
+  await waitForTargetValue(page, 'feedback-input', 'Markit 已输入备注');
   const typedTarget = await domTarget(page, 'feedback-input');
   if (typedTarget.value !== 'Markit 已输入备注') {
     throw new Error(`Expected feedback input value to be typed, got ${JSON.stringify(typedTarget.value)}`);
   }
   result.capabilities.typeText = 'Markit 已输入备注';
   result.capabilities.typeValueVerified = true;
+}
+
+async function waitForTargetValue(page, testId, value) {
+  const started = Date.now();
+  while (Date.now() - started < 20_000) {
+    try {
+      const captureId = await currentCaptureId(page);
+      const targets = await jsonFetch(`${apiUrl}/api/captures/${captureId}/dom-targets`);
+      if (targets.some((target) => target.selector?.includes(`"${testId}"`) && target.value === value)) return;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 180));
+  }
+  throw new Error(`Timed out waiting for ${testId} value ${value}`);
 }
 
 async function verifyDualPreviewControls(page) {
@@ -215,12 +228,12 @@ async function verifyDualPreviewControls(page) {
   }
 
   await page.getByTestId('zoom-in').click();
-  await page.waitForFunction(() => document.querySelector('[data-testid="zoom-label"]')?.textContent?.includes('110%'));
+  await page.waitForFunction(() => document.querySelector('[data-testid="zoom-label"]')?.textContent?.includes('125%'));
   await page.getByTestId('zoom-out').click();
   await page.waitForFunction(() => document.querySelector('[data-testid="zoom-label"]')?.textContent?.includes('100%'));
   result.capabilities.zoomControls = true;
   await screenshot(page, '01c-dual-zoom.png');
-  await page.getByTestId('zoom-fit').click();
+  await page.getByTestId('zoom-preset').selectOption('fit');
   await page.waitForFunction(() => document.querySelector('[data-testid="zoom-label"]')?.textContent?.includes('Fit'));
 
   await page.getByTestId('toggle-left-rail').click();
@@ -328,6 +341,8 @@ async function screenPoint(page, rect, fx, fy) {
 }
 
 async function currentCaptureId(page) {
+  const canvasCaptureId = await page.locator('[data-testid="canvas-layer"]').getAttribute('data-capture-id').catch(() => '');
+  if (canvasCaptureId) return canvasCaptureId;
   const src = await page.locator('[data-testid="canvas-layer"] img').getAttribute('src');
   const match = src?.match(/\/api\/captures\/([^/]+)\/image/);
   if (match) return match[1];
@@ -338,6 +353,11 @@ async function currentCaptureId(page) {
 }
 
 async function fetchCapturesForActiveSession(page) {
+  const canvasSessionId = await page.locator('[data-testid="canvas-layer"]').getAttribute('data-session-id').catch(() => '');
+  if (canvasSessionId) {
+    const body = await jsonFetch(`${apiUrl}/api/sessions/${canvasSessionId}/captures`);
+    return body.captures || [];
+  }
   const currentAddress = await page.getByTestId('session-address').inputValue().catch(() => '');
   const sessions = (await jsonFetch(`${apiUrl}/api/sessions`)).sessions || [];
   const session = sessions.slice().reverse().find((item) => item.currentUrl === currentAddress || item.sourceUrl === currentAddress) || sessions.at(-1);

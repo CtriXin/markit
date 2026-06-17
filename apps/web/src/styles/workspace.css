@@ -203,6 +203,7 @@
 .mk-empty { margin: 14px 16px; color: #918b83; font-size: 13px; }
 
 .mk-stage {
+  position: relative;
   display: grid;
   grid-template-rows: 44px 52px minmax(0, 1fr) auto;
   overflow: hidden;
@@ -332,8 +333,20 @@
 .mk-toolstrip button small { border-radius: 5px; padding: 2px 5px; color: #908980; background: #191815; }
 .mk-toolstrip button.is-active { color: #fff; border-color: var(--mk-blue); background: var(--mk-blue); }
 .mk-toolstrip button.is-active small { color: #fff; background: rgba(0,0,0,.18); }
-.mk-toolstrip button:disabled { opacity: .48; cursor: not-allowed; }
-.mk-toolstrip button:disabled small { color: #77716a; background: rgba(255,255,255,.04); }
+.mk-toolstrip button:disabled {
+  color: #6f6961;
+  border-color: rgba(255,255,255,.05);
+  background: rgba(255,255,255,.025);
+  box-shadow: none;
+  opacity: 1;
+  cursor: not-allowed;
+}
+.mk-toolstrip button:disabled small { display: none; }
+.mk-toolstrip button[data-testid="undo-annotation"]:disabled {
+  color: #89827a;
+  border-color: rgba(255,255,255,.08);
+  background: transparent;
+}
 .mk-input-actions input {
   width: 172px;
   min-height: 30px;
@@ -344,29 +357,47 @@
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 6px;
   margin-left: auto;
   border: 1px solid var(--mk-border);
-  border-radius: 10px;
-  padding: 3px;
+  border-radius: 12px;
+  padding: 5px;
   background: #191815;
 }
 .mk-zoom-controls button {
-  min-width: 30px;
-  min-height: 26px;
-  padding: 0 7px;
+  min-width: 36px;
+  min-height: 32px;
+  padding: 0 10px;
   border-color: transparent;
   background: transparent;
+  white-space: nowrap;
+}
+.mk-zoom-fit-hidden,
+.mk-zoom-label-hidden {
+  position: absolute;
+  width: 1px;
+  min-width: 0;
+  height: 1px;
+  min-height: 0;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  clip-path: inset(50%);
+  pointer-events: none;
+  white-space: nowrap;
 }
 .mk-zoom-controls select {
-  min-height: 28px;
+  min-width: 112px;
+  min-height: 32px;
   border: 0;
-  border-radius: 7px;
-  padding: 0 8px;
+  border-radius: 8px;
+  padding: 0 10px;
   color: #f6efe4;
   background: #24231f;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 850;
+  text-align: center;
+  white-space: nowrap;
 }
 .mk-canvas-wrap {
   position: relative;
@@ -380,12 +411,12 @@
   cursor: default;
 }
 .mk-canvas-zoom {
-  position: sticky;
-  top: 0;
+  position: absolute;
+  right: 22px;
+  bottom: 18px;
   z-index: 30;
   display: flex;
   justify-content: flex-end;
-  margin: -2px 0 10px;
   pointer-events: none;
 }
 .mk-canvas-zoom .mk-zoom-controls {
@@ -399,7 +430,7 @@
   display: grid;
   gap: 14px;
   min-width: 0;
-  min-height: 100%;
+  min-height: 0;
   align-items: start;
 }
 .mk-device-board.is-single { grid-template-columns: minmax(300px, 1fr); }
@@ -460,7 +491,7 @@
 }
 .mk-device-frame.is-active .mk-device-shell { cursor: crosshair; }
 .mk-device-frame.is-active.is-browse-tool .mk-device-shell { cursor: default; }
-.mk-device-board.is-fit .mk-device-frame.is-browse-tool .mk-device-shell {
+.mk-device-board.is-fit .mk-device-shell {
   overflow: hidden;
   overscroll-behavior: contain;
 }
@@ -482,7 +513,7 @@
   width: auto;
   height: auto;
   max-width: 100%;
-  max-height: calc(100dvh - 210px);
+  max-height: calc(100dvh - 260px);
   object-fit: contain;
 }
 .mk-device-board.is-manual .mk-image-layer { max-width: none; }
