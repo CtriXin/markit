@@ -18,13 +18,14 @@ type BugReference = { kind: 'requirement' | 'design' | 'compare' | 'other'; url:
 type BugAsset = { id: string; bugId: string; kind: string; fileName: string; mimeType: string; sizeBytes: number; label?: string; createdAt: string };
 type DraftAsset = { id: string; kind: 'pasted-screenshot' | 'uploaded-screenshot'; fileName: string; mimeType: string; sizeBytes: number; dataUrl: string; label: string };
 type QuickComment = { annotationId: string; captureId: string; rect: Rect; text: string };
-type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; annotationCount?: number; assetCount?: number; exportPath?: string; createdAt?: string; updatedAt?: string };
-type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; assets: BugAsset[] };
+type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; projectSnapshot?: ProjectSnapshot; annotationCount?: number; assetCount?: number; exportPath?: string; createdAt?: string; updatedAt?: string };
+type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; assets: BugAsset[]; projectSnapshot?: ProjectSnapshot };
 type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
 type CatalogStatus = { schema: 'markit.catalog.status.v1'; enabled: boolean; root: string; reason?: string; generatedAt?: string; projectCount?: number; domainCount?: number; source?: { pendingAssociations?: number }; integration?: { syncPolicy?: string } };
 type CatalogProject = { id: string; name: string; status: string; aliases: string[]; domainCount: number; activeDomainCount: number; pendingDomainCount: number; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; labels?: string[]; testing?: { enabled: boolean; defaultViewport: string; viewports: string[] }; confidence?: number };
 type CatalogDomain = { host: string; url: string; projectId: string; projectName: string; env: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; defaultAssignee?: string; confidence?: number };
 type CatalogResolveResult = { status: CatalogStatus; input: string; hostname?: string; matched: boolean; matchedHost?: string; reason?: string; domain?: CatalogDomain; project?: CatalogProject };
+type ComboOption = { value: string; label: string; meta?: string; badge?: string; searchText: string };
 type ProjectSnapshot = {
   schema: 'markit.project-snapshot.v1';
   source: 'client' | 'catalog-resolve';
@@ -32,7 +33,7 @@ type ProjectSnapshot = {
   catalogRoot?: string;
   catalogGeneratedAt?: string;
   project: { id: string; name: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; labels?: string[]; confidence?: number };
-  domain?: { host: string; url: string; env: string; status: string; matchedHost?: string };
+  domain?: { host: string; url: string; env: string; status: string; activeBranch?: string; matchedHost?: string };
 };
 type Session = { id: string; sourceUrl: string; currentUrl: string; title: string; viewport: Viewport; projectSnapshot?: ProjectSnapshot; sessionVersion: number; createdAt?: string };
 
@@ -1432,6 +1433,28 @@ function ProjectCatalogPicker(props: {
 
   const selectedProject = props.projects.find((project) => project.id === props.selectedProjectId);
   const selectedDomain = props.domains.find((domain) => domain.host === props.selectedDomainHost);
+  const projectOptions: ComboOption[] = props.projects.map((project) => ({
+    value: project.id,
+    label: `${project.name} · ${project.scmpService ?? project.id}`,
+    meta: `${project.domainCount} 个域名 · ${project.status}${project.activeBranch ? ` · ${project.activeBranch}` : ''}`,
+    ...(project.pendingDomainCount ? { badge: `${project.pendingDomainCount} pending` } : {}),
+    searchText: [
+      project.id,
+      project.name,
+      project.scmpService,
+      project.gitlabPath,
+      project.activeBranch,
+      project.issueProjectPath,
+      ...(project.aliases ?? [])
+    ].filter(Boolean).join(' ')
+  }));
+  const domainOptions: ComboOption[] = props.domains.map((domain) => ({
+    value: domain.host,
+    label: domain.host,
+    meta: `${domain.env} · ${catalogStatusText(domain.status)}${domain.activeBranch ? ` · ${domain.activeBranch}` : ''}`,
+    ...(domain.status === 'pending' ? { badge: '待确认' } : {}),
+    searchText: [domain.host, domain.env, domain.status, domain.scmpService, domain.gitlabPath, domain.activeBranch].filter(Boolean).join(' ')
+  }));
 
   return (
     <div className="mk-catalog-panel" data-testid="catalog-picker">
@@ -1443,24 +1466,29 @@ function ProjectCatalogPicker(props: {
         <em>{props.status.source?.pendingAssociations ? `${props.status.source.pendingAssociations} 条 pending 关联` : 'catalog ready'}</em>
       </div>
       <div className="mk-catalog-controls">
-        <label>
-          <span>项目</span>
-          <select data-testid="catalog-project-select" value={props.selectedProjectId} onChange={(event) => props.onProjectChange(event.currentTarget.value)}>
-            <option value="">不绑定项目 / 直接输入 URL</option>
-            {props.projects.map((project) => (
-              <option key={project.id} value={project.id}>{project.name} · {project.scmpService ?? project.id}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>域名</span>
-          <select data-testid="catalog-domain-select" value={props.selectedDomainHost} disabled={!props.selectedProjectId || !props.domains.length} onChange={(event) => props.onDomainChange(event.currentTarget.value)}>
-            <option value="">{props.selectedProjectId ? '选择已绑定域名' : '先选择项目'}</option>
-            {props.domains.map((domain) => (
-              <option key={domain.host} value={domain.host}>{domain.host} · {domain.env} · {catalogStatusText(domain.status)}</option>
-            ))}
-          </select>
-        </label>
+        <SearchableSelect
+          label="项目"
+          testId="catalog-project-select"
+          value={props.selectedProjectId}
+          options={projectOptions}
+          placeholder="搜索项目名 / repo / service"
+          emptyLabel="不绑定项目 / 直接输入 URL"
+          noResultsLabel="没有匹配项目"
+          searchEnabled
+          onChange={props.onProjectChange}
+        />
+        <SearchableSelect
+          label="域名"
+          testId="catalog-domain-select"
+          value={props.selectedDomainHost}
+          options={domainOptions}
+          placeholder={props.selectedProjectId ? (props.domains.length >= 10 ? '搜索域名 / env / branch' : '选择已绑定域名') : '先选择项目'}
+          emptyLabel={props.selectedProjectId ? '不绑定域名，只绑定项目' : '先选择项目'}
+          noResultsLabel="没有匹配域名"
+          searchEnabled={props.domains.length >= 10}
+          disabled={!props.selectedProjectId || !props.domains.length}
+          onChange={props.onDomainChange}
+        />
       </div>
       {selectedProject ? (
         <div className="mk-catalog-meta">
@@ -1484,6 +1512,113 @@ function ProjectCatalogPicker(props: {
           )}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function SearchableSelect(props: {
+  label: string;
+  testId: string;
+  value: string;
+  options: ComboOption[];
+  placeholder: string;
+  emptyLabel: string;
+  noResultsLabel: string;
+  searchEnabled: boolean;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const comboRef = useRef<HTMLDivElement>(null);
+  const selected = props.options.find((option) => option.value === props.value);
+  const filtered = useMemo(() => filterComboOptions(props.options, query), [props.options, query]);
+  const visible = (props.searchEnabled ? filtered : props.options).slice(0, 80);
+  const inputValue = open && props.searchEnabled ? query : selected?.label ?? '';
+  const choose = (value: string) => {
+    props.onChange(value);
+    setQuery('');
+    setOpen(false);
+  };
+  return (
+    <label className="mk-combo-label">
+      <span>{props.label}</span>
+      <div
+        ref={comboRef}
+        className={['mk-combo', open ? 'is-open' : '', props.disabled ? 'is-disabled' : ''].filter(Boolean).join(' ')}
+        onBlur={() => window.setTimeout(() => {
+          if (!comboRef.current?.contains(document.activeElement)) {
+            setOpen(false);
+            setQuery('');
+          }
+        }, 0)}
+      >
+        <input
+          data-testid={props.testId}
+          value={inputValue}
+          disabled={props.disabled}
+          readOnly={!props.searchEnabled}
+          onFocus={() => setOpen(true)}
+          onClick={() => setOpen(true)}
+          onChange={(event) => {
+            setQuery(event.currentTarget.value);
+            setOpen(true);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              setOpen(false);
+              setQuery('');
+            }
+            if (event.key === 'Enter' && open && visible[0]) {
+              event.preventDefault();
+              choose(visible[0].value);
+            }
+          }}
+          placeholder={props.placeholder}
+        />
+        <button type="button" disabled={props.disabled} aria-label={`展开${props.label}`} onClick={() => setOpen((current) => !current)}>⌄</button>
+        {open && !props.disabled ? (
+          <div className="mk-combo-menu">
+            <button type="button" className={!props.value ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => choose('')}>{props.emptyLabel}</button>
+            {visible.map((option) => (
+              <button type="button" key={option.value} className={option.value === props.value ? 'is-active' : ''} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(option.value)}>
+                <strong>{option.label}</strong>
+                <span>{option.meta}</span>
+                {option.badge ? <em>{option.badge}</em> : null}
+              </button>
+            ))}
+            {visible.length === 0 ? <p>{props.noResultsLabel}</p> : null}
+          </div>
+        ) : null}
+      </div>
+    </label>
+  );
+}
+
+function ProjectContextCard({ snapshot, fallbackHost }: { snapshot: ProjectSnapshot | undefined; fallbackHost: string }) {
+  const branch = projectBranchLabel(snapshot);
+  return (
+    <section className={snapshot ? 'mk-panel-section mk-project-context is-bound' : 'mk-panel-section mk-project-context'}>
+      <div>
+        <h3>{snapshot ? snapshot.project.name : '未绑定项目'}</h3>
+        <span>{snapshot?.domain?.host ?? fallbackHost}</span>
+      </div>
+      <dl>
+        <dt>项目</dt><dd>{snapshot?.project.name ?? '未绑定'}</dd>
+        <dt>绑定域名</dt><dd>{snapshot?.domain?.host ?? '未绑定'}</dd>
+        <dt>当前分支</dt><dd>{branch}</dd>
+      </dl>
+    </section>
+  );
+}
+
+function ProjectSaveNote({ snapshot, fallbackHost }: { snapshot: ProjectSnapshot | undefined; fallbackHost: string }) {
+  return (
+    <div className={snapshot ? 'mk-save-project-note is-bound' : 'mk-save-project-note'}>
+      <span>保存归属</span>
+      <strong>{snapshot?.project.name ?? '未绑定项目'}</strong>
+      <em>{snapshot?.domain?.host ?? fallbackHost} · {projectBranchLabel(snapshot)}</em>
     </div>
   );
 }
@@ -1531,6 +1666,7 @@ function BugPanel(props: {
     : '先点击“开始标注”，框选后这里会出现截图区域。';
   return (
     <div className="mk-bug-panel">
+      <ProjectContextCard snapshot={props.session.projectSnapshot} fallbackHost={safeHost(props.session.currentUrl || props.session.sourceUrl)} />
       <section className="mk-panel-section mk-ann-list">
         <div className="mk-ann-list-head">
           <h3>本次标注</h3>
@@ -1590,6 +1726,7 @@ function BugPanel(props: {
             </div>
           ) : null}
         </section>
+        <ProjectSaveNote snapshot={props.session.projectSnapshot} fallbackHost={safeHost(props.session.currentUrl || props.session.sourceUrl)} />
         <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>AI 整理 Bug（{props.aiStatus.provider}{props.aiStatus.supportsImages ? '+图片' : ''}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>保存为一个 Bug</button></div>
         <small>快捷：1/2/3/4 设 P0/P1/P2/P3，A 快速保存，Z 撤销标注，O 圈选，D 自由画；画布滚轮会滚动真实页面。</small>
         {!props.aiStatus.enabled ? <small>{props.aiStatus.reason}</small> : null}
@@ -1599,10 +1736,10 @@ function BugPanel(props: {
         {props.activeTarget ? <dl data-testid="active-target"><dt>选择器</dt><dd>{props.activeTarget.selector}</dd><dt>标签</dt><dd>{props.activeTarget.label || props.activeTarget.text || props.activeTarget.tagName}</dd>{props.activeTarget.value ? <><dt>值</dt><dd>{props.activeTarget.value}</dd></> : null}<dt>评分</dt><dd>{props.activeTarget.selectorScore}</dd></dl> : <p className="mk-empty">在画布上移动或点击，自动识别 DOM 目标。</p>}
         {props.lastPoint ? <small>坐标 {props.lastPoint.x.toFixed(0)}, {props.lastPoint.y.toFixed(0)}</small> : null}
       </details>
-      <details className="mk-panel-section mk-meta-list">
+      <details className="mk-panel-section mk-meta-list" open>
         <summary>截图信息</summary>
         <dl>
-          {props.session.projectSnapshot ? <><dt>项目</dt><dd>{props.session.projectSnapshot.project.name}</dd><dt>绑定域名</dt><dd>{props.session.projectSnapshot.domain?.host ?? '未绑定域名'}</dd><dt>当前分支</dt><dd>{props.session.projectSnapshot.project.activeBranch ?? '未记录'}</dd></> : null}
+          <dt>项目</dt><dd>{props.session.projectSnapshot?.project.name ?? '未绑定'}</dd><dt>绑定域名</dt><dd>{props.session.projectSnapshot?.domain?.host ?? '未绑定'}</dd><dt>当前分支</dt><dd>{projectBranchLabel(props.session.projectSnapshot)}</dd>
           <dt>视口</dt><dd>{props.capture.viewport.name}</dd><dt>模式</dt><dd>{captureModeLabel(props.capture.mode)}</dd><dt>来源</dt><dd>{props.session.sourceUrl}</dd><dt>最终地址</dt><dd>{props.capture.finalUrl}</dd>
         </dl>
       </details>
@@ -1685,6 +1822,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
           {props.bugs.map((bug) => (
             <article data-testid="bug-card" className={bug.id === props.selectedBugId ? 'mk-bug-card is-active' : 'mk-bug-card'} key={bug.id} onClick={() => props.loadBugDetail(bug.id)}>
               <div className="mk-card-top"><strong>{bug.severity}</strong><span>{statusLabels[bug.status] ?? bug.status}</span></div>
+              <div className="mk-card-project"><strong>{bug.projectSnapshot?.project.name ?? '未绑定项目'}</strong><span>{bug.projectSnapshot?.domain?.host ?? safeHost(bug.finalUrl)}</span></div>
               <div className="mk-card-tags">{bug.tags?.[0] ? <em>{bugTypeLabel(bug.tags[0])}</em> : null}<small>{safeHost(bug.finalUrl)}</small></div>
               <h2>{bug.title}</h2>
               <p>{bug.actual}</p>
@@ -1719,6 +1857,7 @@ function BugDetailPanel({ detail, patchBug, exportBug, deleteBug }: { detail: Bu
           <button className="mk-danger-button" data-testid="detail-delete" onClick={() => void deleteBug(detail.bug.id)}>删除 Bug</button>
         </div>
       </div>
+      <ProjectContextCard snapshot={detail.bug.projectSnapshot ?? detail.projectSnapshot} fallbackHost={safeHost(detail.bug.finalUrl)} />
       <div className="mk-two-col">
         <label>优先级<select value={edit.severity} onChange={(event) => setEdit((current) => current ? { ...current, severity: event.currentTarget.value } : current)}><option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></label>
         <label>状态<select value={edit.status} onChange={(event) => setEdit((current) => current ? { ...current, status: event.currentTarget.value } : current)}>{statusOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
@@ -1885,6 +2024,35 @@ function catalogStatusText(value: string): string {
   return ({ active: '已验证', pending: '待确认', archived: '已归档', unknown: '未知' } as Record<string, string>)[value] ?? value;
 }
 
+function projectBranchLabel(snapshot: ProjectSnapshot | undefined): string {
+  return snapshot?.domain?.activeBranch || snapshot?.project.activeBranch || '未记录';
+}
+
+function filterComboOptions(options: ComboOption[], query: string): ComboOption[] {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return options;
+  return options
+    .map((option) => {
+      const haystack = `${option.label} ${option.meta ?? ''} ${option.searchText}`.toLowerCase();
+      const score = terms.reduce((total, term) => total + fuzzyTermScore(haystack, term), 0);
+      return { option, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.option.label.localeCompare(b.option.label))
+    .map((item) => item.option);
+}
+
+function fuzzyTermScore(value: string, term: string): number {
+  if (value.includes(term)) return term.length + 20;
+  let index = 0;
+  for (const char of term) {
+    index = value.indexOf(char, index);
+    if (index === -1) return 0;
+    index += 1;
+  }
+  return Math.max(1, Math.floor(term.length / 2));
+}
+
 function snapshotFromCatalog(status: CatalogStatus, project: CatalogProject, domain?: CatalogDomain, matchedHost?: string): ProjectSnapshot {
   const snapshot: ProjectSnapshot = {
     schema: 'markit.project-snapshot.v1',
@@ -1907,6 +2075,7 @@ function snapshotFromCatalog(status: CatalogStatus, project: CatalogProject, dom
   if (typeof project.confidence === 'number') snapshot.project.confidence = project.confidence;
   if (domain) {
     snapshot.domain = { host: domain.host, url: domain.url, env: domain.env, status: domain.status };
+    if (domain.activeBranch) snapshot.domain.activeBranch = domain.activeBranch;
     if (matchedHost) snapshot.domain.matchedHost = matchedHost;
   }
   return snapshot;

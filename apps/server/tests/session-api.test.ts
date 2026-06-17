@@ -29,7 +29,8 @@ const projectSnapshot = {
     host: 'demo.example.com',
     url: 'https://demo.example.com',
     env: 'prod',
-    status: 'active'
+    status: 'active',
+    activeBranch: 'release-1.2.3'
   }
 };
 
@@ -135,8 +136,11 @@ describe('session and capture API', () => {
     });
     expect(bugResponse.status).toBe(201);
     const bugBody = await bugResponse.json();
+    expect(bugBody.bug.projectSnapshot).toMatchObject({ project: { id: 'ptc-demo', name: 'Demo Project' }, domain: { host: 'demo.example.com', activeBranch: 'release-1.2.3' } });
     expect(bugBody.assets).toHaveLength(1);
     expect(bugBody.bug.assetCount).toBe(1);
+    const bugsWithProject = await fetch(`${apiBaseUrl}/api/bugs`).then((item) => item.json());
+    expect(bugsWithProject.bugs.find((bug: { id: string }) => bug.id === bugBody.bug.id)?.projectSnapshot).toMatchObject({ project: { id: 'ptc-demo' } });
     const assetResponse = await fetch(`${apiBaseUrl}/api/bug-assets/${bugBody.assets[0].id}/image`);
     expect(assetResponse.status).toBe(200);
     expect(assetResponse.headers.get('content-type')).toContain('image/png');

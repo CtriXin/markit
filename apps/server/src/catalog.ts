@@ -112,6 +112,7 @@ export type ProjectSnapshot = {
     url: string;
     env: string;
     status: string;
+    activeBranch?: string;
     matchedHost?: string;
   };
 };
@@ -292,6 +293,7 @@ export function projectSnapshotFromCatalog(input: {
       env: input.domain.env,
       status: input.domain.status
     };
+    if (input.domain.activeBranch) snapshot.domain.activeBranch = input.domain.activeBranch;
     if (input.matchedHost) snapshot.domain.matchedHost = input.matchedHost;
   }
   return snapshot;
