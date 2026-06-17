@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { createReadStream } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join, resolve } from 'node:path';
 import { createApp } from '../src/app.js';
@@ -203,6 +203,49 @@ describe('session and capture API', () => {
       restoreEnv('GLAB_TOKEN', previousGitLab.glab);
     }
 
+    const existingSubmitDir = join(dataDir, 'issue-drafts', 'existing-submit');
+    await mkdir(existingSubmitDir, { recursive: true });
+    await writeFile(join(existingSubmitDir, 'submitted.json'), JSON.stringify({
+      schema: 'markit.gitlab-issue-submit.v1',
+      submissions: [{
+        bugId: bugBody.bug.id,
+        title: '[P2] demo.example.com - 粘贴截图证据',
+        projectPath: 'ptc/fe/ptc-wiki',
+        iid: 88,
+        id: 188,
+        webUrl: 'https://gitlab.adsconflux.xyz/ptc/fe/ptc-wiki/-/issues/88',
+        workItemUrl: 'https://gitlab.adsconflux.xyz/ptc/fe/ptc-wiki/-/work_items/88',
+        assignee: 'xin',
+        assigneeResolved: false,
+        labels: ['markit', 'bug'],
+        uploadedEvidence: [{ filePath: '/tmp/screenshot.png', markdown: '![screenshot](https://gitlab.adsconflux.xyz/ptc/fe/ptc-wiki/uploads/demo/screenshot.png)', assetUrl: 'https://gitlab.adsconflux.xyz/ptc/fe/ptc-wiki/uploads/demo/screenshot.png' }]
+      }]
+    }));
+    process.env.MARKIT_GITLAB_AUTH = 'token';
+    delete process.env.MARKIT_GITLAB_TOKEN;
+    delete process.env.GITLAB_TOKEN;
+    delete process.env.GLAB_TOKEN;
+    try {
+      const duplicateSubmitResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ bugIds: [bugBody.bug.id] })
+      });
+      expect(duplicateSubmitResponse.status).toBe(200);
+      const duplicateSubmit = await duplicateSubmitResponse.json();
+      expect(duplicateSubmit).toMatchObject({
+        duplicate: true,
+        createdCount: 0,
+        skippedCount: 1,
+        submissions: [expect.objectContaining({ bugId: bugBody.bug.id, iid: 88, reused: true })]
+      });
+    } finally {
+      restoreEnv('MARKIT_GITLAB_AUTH', previousGitLab.auth);
+      restoreEnv('MARKIT_GITLAB_TOKEN', previousGitLab.markit);
+      restoreEnv('GITLAB_TOKEN', previousGitLab.generic);
+      restoreEnv('GLAB_TOKEN', previousGitLab.glab);
+    }
+
     const deleteResponse = await fetch(`${apiBaseUrl}/api/bugs/${bugBody.bug.id}`, { method: 'DELETE' });
     expect(deleteResponse.status).toBe(200);
     const bugsAfterDelete = await fetch(`${apiBaseUrl}/api/bugs`).then((item) => item.json());
@@ -318,6 +361,41 @@ describe('session and capture API', () => {
       restoreEnv('MARKIT_MMF_MODEL_ID', previous.model);
       restoreEnv('MARKIT_MODEL_MULTIMODAL', previous.multimodal);
       restoreEnv('MARKIT_MMF_CONFIG', previous.config);
+    }
+  });
+
+  it('uses existing bug draft fields when mock-normalizing AI output', async () => {
+    const previous = { provider: process.env.MARKIT_AI_PROVIDER };
+    process.env.MARKIT_AI_PROVIDER = 'mock';
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/ai/normalize-bug`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'session_for_ai_test',
+          captureId: 'capture_for_ai_test',
+          sourceText: '标题：页面403\n期望表现：正常显示',
+          currentDraft: {
+            title: '页面403',
+            actual: '',
+            expected: '正常显示',
+            severity: 'P2',
+            comment: ''
+          }
+        })
+      });
+      expect(response.status).toBe(202);
+      const body = await response.json();
+      expect(body.status).toBe('succeeded');
+      expect(body.result.kind).toBe('draft');
+      expect(body.result.draft).toMatchObject({
+        title: '页面403',
+        actual: '页面出现“页面403”，与预期不一致。',
+        expected: '正常显示',
+        severity: 'P2'
+      });
+    } finally {
+      restoreEnv('MARKIT_AI_PROVIDER', previous.provider);
     }
   });
 

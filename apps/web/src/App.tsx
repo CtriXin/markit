@@ -21,7 +21,8 @@ type QuickComment = { annotationId: string; captureId: string; rect: Rect; text:
 type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; projectSnapshot?: ProjectSnapshot; annotationCount?: number; assetCount?: number; exportPath?: string; issueSubmission?: IssueSubmission; createdAt?: string; updatedAt?: string };
 type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; assets: BugAsset[]; projectSnapshot?: ProjectSnapshot };
 type IssueSubmission = { bugId: string; title: string; projectPath?: string; iid?: number; id?: number; workItemUrl: string; webUrl: string; reused?: boolean; synced?: boolean; remoteEvidenceCount?: number; uploadedEvidence?: Array<{ filePath: string; markdown: string; assetUrl?: string }> };
-type IssueSubmitResponse = { count: number; createdCount?: number; skippedCount?: number; syncedCount?: number; submissions: IssueSubmission[]; submitPath: string };
+type IssueSubmitResponse = { count: number; createdCount?: number; skippedCount?: number; syncedCount?: number; duplicate?: boolean; submissions: IssueSubmission[]; submitPath: string };
+type IssueUiState = { status: 'submitting' | 'submitted' | 'reused' | 'synced' | 'error'; text?: string; submission?: IssueSubmission };
 type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
 type CatalogStatus = { schema: 'markit.catalog.status.v1'; enabled: boolean; root: string; reason?: string; generatedAt?: string; projectCount?: number; domainCount?: number; source?: { pendingAssociations?: number }; integration?: { syncPolicy?: string } };
 type CatalogProject = { id: string; name: string; status: string; aliases: string[]; domainCount: number; activeDomainCount: number; pendingDomainCount: number; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; labels?: string[]; testing?: { enabled: boolean; defaultViewport: string; viewports: string[] }; confidence?: number };
@@ -746,13 +747,32 @@ export function App() {
     setBusy('AI 正在整理 Bug');
     setMessage('');
     try {
-      const body = await api<{ result: any }>('/api/ai/normalize-bug', { method: 'POST', body: JSON.stringify({ sessionId: session.id, captureId: capture.id, annotationIds: selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id), sourceText: draft.comment || draft.actual, strictness: 'strict', assets: draftAssets.map((asset) => ({ label: asset.label, fileName: asset.fileName, mimeType: asset.mimeType, dataUrl: asset.dataUrl })) }) });
+      const body = await api<{ result: any }>('/api/ai/normalize-bug', {
+        method: 'POST',
+        body: JSON.stringify({
+          sessionId: session.id,
+          captureId: capture.id,
+          annotationIds: selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id),
+          currentDraft: draft,
+          sourceText: bugSourceText(draft, annotations),
+          strictness: 'strict',
+          assets: draftAssets.map((asset) => ({ label: asset.label, fileName: asset.fileName, mimeType: asset.mimeType, dataUrl: asset.dataUrl }))
+        })
+      });
       if (body.result.kind === 'draft') {
         const next = body.result.draft;
-        setDraft((current) => ({ ...current, title: next.title, actual: next.actual, expected: next.expected, severity: next.severity }));
+        setDraft((current) => mergeAiDraft(current, next));
         setMessage('AI 已整理到可编辑字段。');
       } else {
-        setMessage(`AI 需要补充：${body.result.questions.map((q: any) => q.question).join(' / ')}`);
+        const questions = unansweredAiQuestions(draft, body.result.questions ?? []);
+        if (!questions.length && body.result.partialDraft) {
+          setDraft((current) => mergeAiDraft(current, body.result.partialDraft));
+          setMessage('AI 已根据现有字段整理；没有再追问已填写内容。');
+        } else if (!questions.length) {
+          setMessage('AI 已识别现有字段；没有需要补充的问题。');
+        } else {
+          setMessage(`AI 需要补充：${questions.map((q: any) => q.question).join(' / ')}`);
+        }
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'AI 整理失败');
@@ -1869,6 +1889,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
   const [selectedProjectKey, setSelectedProjectKey] = useState('');
   const [selectedBugIds, setSelectedBugIds] = useState<string[]>([]);
   const [bulkAction, setBulkAction] = useState<BulkActionState>({ status: 'idle', text: '' });
+  const [issueUiByBugId, setIssueUiByBugId] = useState<Record<string, IssueUiState>>({});
   const submitAbortRef = useRef<AbortController | null>(null);
   const selectedBug = props.bugs.find((bug) => bug.id === props.selectedBugId);
 
@@ -1895,6 +1916,24 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
     setSelectedBugIds((current) => current.filter((id) => props.bugs.some((bug) => bug.id === id)));
   }, [props.bugs]);
 
+  useEffect(() => {
+    setIssueUiByBugId((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const bug of props.bugs) {
+        if (bug.issueSubmission && next[bug.id]?.status !== 'submitting') {
+          const status = bug.issueSubmission.synced ? 'synced' : bug.issueSubmission.reused ? 'reused' : 'submitted';
+          const currentState = next[bug.id];
+          if (currentState?.status !== status || currentState.submission?.iid !== bug.issueSubmission.iid) {
+            next[bug.id] = { status, submission: bug.issueSubmission };
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [props.bugs]);
+
   const toggleBugSelection = (bugId: string) => {
     setSelectedBugIds((current) => current.includes(bugId) ? current.filter((id) => id !== bugId) : [...current, bugId]);
   };
@@ -1905,7 +1944,9 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
     });
   };
   const selectedForAction = visibleSelectedIds.length ? visibleSelectedIds : visibleBugIds;
+  const selectedForIssueSubmit = selectedForAction.filter((bugId) => !issueUiHasSubmission(issueUiByBugId[bugId]) && issueUiByBugId[bugId]?.status !== 'submitting' && !props.bugs.find((bug) => bug.id === bugId)?.issueSubmission);
   const actionRunning = bulkAction.status === 'running';
+  const issueSubmitLabel = actionRunning ? '处理中...' : selectedForAction.length && !selectedForIssueSubmit.length ? '返回已有 Issue' : '真实挂 Wiki Issue';
 
   const runBulkExport = async () => {
     if (!selectedForAction.length || actionRunning) return;
@@ -1931,24 +1972,49 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
 
   const runIssueSubmit = async () => {
     if (!selectedForAction.length || actionRunning) return;
+    if (!selectedForIssueSubmit.length) {
+      const submissions = selectedForAction
+        .map((bugId) => issueUiByBugId[bugId]?.submission ?? props.bugs.find((bug) => bug.id === bugId)?.issueSubmission)
+        .filter((submission): submission is IssueSubmission => Boolean(submission));
+      const links = submissions.slice(0, 4).map((item, index) => ({ label: item.iid ? `已挂载 #${item.iid}` : `已挂载 #${index + 1}`, href: item.workItemUrl || item.webUrl }));
+      setBulkAction({ status: 'success', action: 'submit', text: `无需重复提交：${submissions.length} 个 Bug 已经有 Wiki Issue。`, detail: '状态：已返回已有链接；没有再次创建 GitLab Work Item。', links });
+      return;
+    }
     const controller = new AbortController();
     submitAbortRef.current = controller;
-    setBulkAction({ status: 'running', action: 'submit', text: `正在上传截图并真实挂载 ${selectedForAction.length} 个 Wiki Issue...`, detail: '状态：loading；步骤：导出 evidence -> 上传截图资源 -> 创建/同步 Work Item' });
+    setIssueUiByBugId((current) => {
+      const next = { ...current };
+      for (const bugId of selectedForIssueSubmit) next[bugId] = { status: 'submitting', text: '正在提交到 Wiki Issue...' };
+      return next;
+    });
+    setBulkAction({ status: 'running', action: 'submit', text: `正在上传截图并真实挂载 ${selectedForIssueSubmit.length} 个 Wiki Issue...`, detail: `状态：loading；已跳过 ${selectedForAction.length - selectedForIssueSubmit.length} 个已挂载 Bug。步骤：导出 evidence -> 上传截图资源 -> 创建/同步 Work Item` });
     try {
-      const result = await props.submitGitLabIssues(selectedForAction, controller.signal);
+      const result = await props.submitGitLabIssues(selectedForIssueSubmit, controller.signal);
       const created = result.createdCount ?? result.count;
       const skipped = result.skippedCount ?? result.submissions.filter((item) => item.reused).length;
       const synced = result.syncedCount ?? result.submissions.filter((item) => item.synced).length;
       const evidenceCount = result.submissions.reduce((total, item) => total + issueEvidenceCount(item), 0);
+      setIssueUiByBugId((current) => {
+        const next = { ...current };
+        for (const item of result.submissions) {
+          next[item.bugId] = { status: item.synced ? 'synced' : item.reused ? 'reused' : 'submitted', submission: item };
+        }
+        return next;
+      });
       const links = result.submissions.slice(0, 4).map((item, index) => {
         const number = item.iid ? `#${item.iid}` : `#${index + 1}`;
         return { label: item.synced ? `已补图 ${number}` : item.reused ? `已存在 ${number}` : `打开 ${number}`, href: item.workItemUrl || item.webUrl };
       });
-      setBulkAction({ status: 'success', action: 'submit', text: `已完成：新建 ${created} 个，已存在 ${skipped} 个，同步补图 ${synced} 个，截图资源 ${evidenceCount} 张。`, detail: '状态：完成；可点链接打开 GitLab Work Item 检查图片。', links });
+      setBulkAction({ status: 'success', action: 'submit', text: `已完成：新建 ${created} 个，已存在 ${skipped} 个，同步补图 ${synced} 个，截图资源 ${evidenceCount} 张。`, detail: `${result.duplicate ? '后端判定为重复提交，已直接返回已有链接。' : '状态：完成；卡片已回填 Issue 状态和链接。'}`, links });
     } catch (error) {
       if (isAbortError(error)) {
         setBulkAction({ status: 'stopped', action: 'submit', text: '已停止等待：本次前端等待已取消。', detail: '状态：停止；如果后台已开始提交，稍后刷新 Bug 列表会回填 GitLab 状态，避免立刻重复点击。' });
       } else {
+        setIssueUiByBugId((current) => {
+          const next = { ...current };
+          for (const bugId of selectedForIssueSubmit) next[bugId] = { status: 'error', text: error instanceof Error ? error.message : String(error) };
+          return next;
+        });
         setBulkAction({ status: 'error', action: 'submit', text: `已停止：${error instanceof Error ? error.message : String(error)}`, detail: '状态：失败停止；没有确认成功前不要重复批量点击。' });
       }
     } finally {
@@ -1996,7 +2062,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
             <span>{visibleSelectedIds.length ? `已选 ${visibleSelectedIds.length} 个` : '未选择时默认处理当前项目全部 Bug'}</span>
             <button data-testid="bulk-export" disabled={!selectedForAction.length || actionRunning} onClick={() => void runBulkExport()}>批量导出</button>
             <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueDraft()}>挂到 Wiki Issue 草稿</button>
-            <button data-testid="bulk-issue-submit" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueSubmit()}>{actionRunning ? '处理中...' : '真实挂 Wiki Issue'}</button>
+            <button data-testid="bulk-issue-submit" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueSubmit()}>{issueSubmitLabel}</button>
             {bulkAction.status !== 'idle' ? (
               <div className={`mk-bulk-status is-${bulkAction.status}`} data-testid="bulk-action-status" role="status" aria-live="polite">
                 <strong>{bulkAction.text}</strong>
@@ -2018,7 +2084,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
                 <span data-testid="bug-annotation-count">{bug.annotationCount ?? 0} 条标注</span>
                 {bug.assetCount ? <span className="mk-reference-count">{bug.assetCount} 张截图</span> : null}
                 {bug.references?.length ? <span className="mk-reference-count">{bug.references.length} 个引用</span> : null}
-                <IssueStatusPill submission={bug.issueSubmission} />
+                <IssueStatusPill submission={bug.issueSubmission} state={issueUiByBugId[bug.id]} />
                 <div className="mk-card-actions">
                   <button data-testid="export-evidence" onClick={(event) => { event.stopPropagation(); props.exportBug(bug.id); }}>导出证据</button>
                   <button className="mk-danger-button" data-testid="delete-bug" onClick={(event) => { event.stopPropagation(); void props.deleteBug(bug.id); }}>删除</button>
@@ -2029,26 +2095,37 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
             {visibleBugs.length === 0 ? <p className="mk-empty">这个项目还没有 Bug。</p> : null}
           </div>
         </div>
-        <BugDetailPanel detail={props.bugDetail} patchBug={props.patchBug} exportBug={props.exportBug} deleteBug={props.deleteBug} />
+        <BugDetailPanel detail={props.bugDetail} issueState={props.bugDetail ? issueUiByBugId[props.bugDetail.bug.id] : undefined} patchBug={props.patchBug} exportBug={props.exportBug} deleteBug={props.deleteBug} />
       </div>
     </section>
   );
 }
 
-function IssueStatusPill({ submission, detail = false }: { submission: IssueSubmission | undefined; detail?: boolean }) {
-  if (!submission) {
+function IssueStatusPill({ submission, state, detail = false }: { submission: IssueSubmission | undefined; state: IssueUiState | undefined; detail?: boolean }) {
+  const effectiveSubmission = state?.submission ?? submission;
+  if (state?.status === 'submitting') {
+    return <div className={detail ? 'mk-issue-pill is-pending is-detail' : 'mk-issue-pill is-pending'} data-testid="bug-issue-status"><strong>Wiki Issue</strong><span>提交中...</span></div>;
+  }
+  if (state?.status === 'error') {
+    return <div className={detail ? 'mk-issue-pill is-error is-detail' : 'mk-issue-pill is-error'} data-testid="bug-issue-status"><strong>Wiki Issue</strong><span>{state.text || '提交失败'}</span></div>;
+  }
+  if (!effectiveSubmission) {
     return <div className={detail ? 'mk-issue-pill is-empty is-detail' : 'mk-issue-pill is-empty'} data-testid="bug-issue-status"><strong>Wiki Issue</strong><span>未挂载</span></div>;
   }
-  const href = submission.workItemUrl || submission.webUrl;
-  const evidenceCount = issueEvidenceCount(submission);
-  const status = submission.synced ? '已补图' : submission.reused ? '已存在' : '已挂载';
+  const href = effectiveSubmission.workItemUrl || effectiveSubmission.webUrl;
+  const evidenceCount = issueEvidenceCount(effectiveSubmission);
+  const status = state?.status === 'synced' || effectiveSubmission.synced ? '已补图' : state?.status === 'reused' || effectiveSubmission.reused ? '已存在' : '已挂载';
   return (
     <div className={detail ? 'mk-issue-pill is-linked is-detail' : 'mk-issue-pill is-linked'} data-testid="bug-issue-status">
       <strong>Wiki Issue</strong>
-      <a href={href} target="_blank" rel="noreferrer">{status}{submission.iid ? ` #${submission.iid}` : ''}</a>
+      <a href={href} target="_blank" rel="noreferrer">{status}{effectiveSubmission.iid ? ` #${effectiveSubmission.iid}` : ''}</a>
       <span>{evidenceCount ? `截图资源 ${evidenceCount} 张` : '等待截图同步'}</span>
     </div>
   );
+}
+
+function issueUiHasSubmission(state: IssueUiState | undefined): boolean {
+  return Boolean(state?.submission && ['submitted', 'reused', 'synced'].includes(state.status));
 }
 
 function issueEvidenceCount(submission: IssueSubmission): number {
@@ -2081,7 +2158,7 @@ function bugProjectGroupKey(bug: Bug): string {
   return bug.projectSnapshot?.project.id ?? `unbound:${safeHost(bug.finalUrl)}`;
 }
 
-function BugDetailPanel({ detail, patchBug, exportBug, deleteBug }: { detail: BugDetail | undefined; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; deleteBug: (id: string) => Promise<void> }) {
+function BugDetailPanel({ detail, issueState, patchBug, exportBug, deleteBug }: { detail: BugDetail | undefined; issueState: IssueUiState | undefined; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; deleteBug: (id: string) => Promise<void> }) {
   const [edit, setEdit] = useState<Bug | undefined>(detail?.bug);
   useEffect(() => setEdit(detail?.bug), [detail?.bug.id]);
   if (!detail || !edit) return <aside className="mk-bug-detail"><p className="mk-empty">选择一个 Bug 查看证据。</p></aside>;
@@ -2095,7 +2172,7 @@ function BugDetailPanel({ detail, patchBug, exportBug, deleteBug }: { detail: Bu
         </div>
       </div>
       <ProjectContextCard snapshot={detail.bug.projectSnapshot ?? detail.projectSnapshot} fallbackHost={safeHost(detail.bug.finalUrl)} />
-      <IssueStatusPill submission={detail.bug.issueSubmission} detail />
+      <IssueStatusPill submission={detail.bug.issueSubmission} state={issueState} detail />
       <div className="mk-two-col">
         <label>优先级<select value={edit.severity} onChange={(event) => setEdit((current) => current ? { ...current, severity: event.currentTarget.value } : current)}><option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></label>
         <label>状态<select value={edit.status} onChange={(event) => setEdit((current) => current ? { ...current, status: event.currentTarget.value } : current)}>{statusOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
@@ -2142,6 +2219,37 @@ async function api<T>(url: string, init: RequestInit = {}): Promise<T> {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function bugSourceText(draft: DraftBug, annotations: Annotation[]): string {
+  return [
+    draft.comment ? `口语描述：${draft.comment}` : '',
+    draft.title ? `标题：${draft.title}` : '',
+    draft.actual ? `实际表现：${draft.actual}` : '',
+    draft.expected ? `期望表现：${draft.expected}` : '',
+    annotations.map((annotation, index) => annotation.note ? `标注 ${index + 1}：${annotation.note}` : '').filter(Boolean).join('\n')
+  ].filter(Boolean).join('\n');
+}
+
+function mergeAiDraft(current: DraftBug, next: Record<string, unknown>): DraftBug {
+  const value = (key: 'title' | 'actual' | 'expected' | 'severity') => String(next?.[key] ?? '').trim();
+  return {
+    ...current,
+    title: current.title.trim() || value('title') || current.title,
+    actual: current.actual.trim() || value('actual') || current.actual,
+    expected: current.expected.trim() || value('expected') || current.expected,
+    severity: value('severity') || current.severity
+  };
+}
+
+function unansweredAiQuestions(draft: DraftBug, questions: Array<{ id?: string; question?: string }>) {
+  return questions.filter((question) => {
+    const key = `${question.id ?? ''} ${question.question ?? ''}`.toLowerCase();
+    if (/expected|期望|应该/.test(key)) return !draft.expected.trim();
+    if (/actual|实际|表现|现象/.test(key)) return !draft.actual.trim() && !draft.title.trim() && !draft.comment.trim();
+    if (/title|标题/.test(key)) return !draft.title.trim();
+    return true;
+  });
 }
 
 function completeDraft(draft: DraftBug, target?: DomTarget, evidenceText = ''): DraftBug {

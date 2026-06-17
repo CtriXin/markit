@@ -41,6 +41,13 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('停止等待');
     expect(source).toContain('IssueStatusPill');
     expect(source).toContain('截图资源');
+    expect(source).toContain('currentDraft');
+    expect(source).toContain('unansweredAiQuestions');
+    expect(source).toContain('mergeAiDraft');
+    expect(source).toContain('selectedForIssueSubmit');
+    expect(source).toContain('无需重复提交');
+    expect(source).toContain('提交中...');
+    expect(source).toContain('返回已有 Issue');
     expect(source).not.toMatch(/ChatComposer|project\/run/i);
   });
 });

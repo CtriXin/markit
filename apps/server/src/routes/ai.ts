@@ -237,15 +237,16 @@ function loadVisionModelSet(config: MmfConfig | undefined): Set<string> {
 }
 
 function mockNormalize(input: Record<string, unknown>) {
-  const text = String(input?.sourceText || '');
-  const hasExpected = /应该|期望|expected|should|需要|改成/i.test(text);
-  if (!hasExpected) {
+  const currentDraft = draftFromInput(input.currentDraft);
+  const text = String(input?.sourceText || currentDraft.comment || currentDraft.actual || currentDraft.title || '').trim();
+  const expected = currentDraft.expected || extractExpected(text);
+  if (!expected) {
     return {
       kind: 'clarification_required' as const,
       questions: [{ id: 'q_expected', question: '这个问题的期望表现是什么？', reason: 'missing_expected' as const, suggestions: ['与设计稿一致', '完整显示关键按钮', '保持当前布局但修复遮挡'] }],
       partialDraft: {
-        title: text.slice(0, 32) || '未命名问题',
-        actual: text,
+        title: currentDraft.title || inferTitle(text),
+        actual: currentDraft.actual || inferActual(text, currentDraft.title),
         affectedArea: '当前标注区域'
       },
       modelTraceId: `mock_${randomUUID()}`,
@@ -255,11 +256,11 @@ function mockNormalize(input: Record<string, unknown>) {
   return {
     kind: 'draft' as const,
     draft: {
-      title: inferTitle(text),
+      title: currentDraft.title || inferTitle(text),
       problemType: inferProblemType(text),
-      severity: inferSeverity(text),
-      actual: text,
-      expected: extractExpected(text),
+      severity: currentDraft.severity || inferSeverity(text),
+      actual: currentDraft.actual || inferActual(text, currentDraft.title),
+      expected,
       affectedArea: '当前标注区域',
       reproSteps: ['打开目标 URL', '切换到当前 viewport', '查看标注区域'],
       acceptanceCriteria: ['标注区域的问题已修复', '在当前 viewport 下重新截图无明显视觉错误'],
@@ -307,7 +308,7 @@ function chatCompletionsEndpoint(baseUrl: string): string {
 }
 
 function buildNormalizeMessages(input: Record<string, unknown>, status: ProviderStatus) {
-  const system = { role: 'system', content: 'You convert UI bug comments and optional screenshots into strict JSON. Return either draft or clarification_required. If screenshots are provided, use them as original evidence and mention visible mismatch only when directly supported.' };
+  const system = { role: 'system', content: 'You convert UI bug comments, current form fields, and optional screenshots into strict JSON. Return either draft or clarification_required. Never ask for a field that is already present in currentDraft. Preserve user-provided title/expected/severity unless they are empty. If screenshots are provided, use them as original evidence and mention visible mismatch only when directly supported.' };
   const text = JSON.stringify({ ...input, assets: imageAssetSummary(input.assets) });
   if (!status.supportsImages) return [system, { role: 'user', content: text }];
   const imageParts = imageAssets(input.assets).slice(0, 4).map((asset) => ({ type: 'image_url', image_url: { url: asset.dataUrl } }));
@@ -341,8 +342,27 @@ function imageAssetSummary(value: unknown) {
   return imageAssets(value).map(({ dataUrl: _dataUrl, ...asset }) => asset);
 }
 
+function draftFromInput(value: unknown): { title: string; actual: string; expected: string; severity: string; comment: string } {
+  const input = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    title: String(input.title ?? '').trim(),
+    actual: String(input.actual ?? '').trim(),
+    expected: String(input.expected ?? '').trim(),
+    severity: String(input.severity ?? '').trim(),
+    comment: String(input.comment ?? '').trim()
+  };
+}
+
 function inferTitle(text: string): string {
   return text.replace(/[。.!].*$/, '').slice(0, 48) || 'UI 问题';
+}
+
+function inferActual(text: string, title = ''): string {
+  const actualLine = text.match(/实际表现[:：]\s*([^\n]+)/)?.[1]?.trim();
+  if (actualLine) return actualLine;
+  if (title) return `页面出现“${title}”，与预期不一致。`;
+  const firstProblemLine = text.split(/\n+/).find((line) => !/^期望表现[:：]/.test(line) && line.trim());
+  return firstProblemLine?.replace(/^标题[:：]\s*/, '').trim() || '当前标注区域显示异常。';
 }
 
 function inferProblemType(text: string) {
@@ -362,5 +382,5 @@ function inferSeverity(text: string) {
 
 function extractExpected(text: string): string {
   const match = text.match(/(?:应该|期望|should|expected|需要)(.*)$/i);
-  return match?.[1]?.trim() || '应按设计预期正确显示并可操作。';
+  return match?.[1]?.trim() || '';
 }

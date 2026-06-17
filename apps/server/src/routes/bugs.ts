@@ -14,6 +14,7 @@ const allowedAssetTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const DEFAULT_ISSUE_HUB_PROJECT_PATH = 'ptc/fe/ptc-wiki';
 const DEFAULT_GITLAB_BASE_URL = 'https://gitlab.adsconflux.xyz';
 const gitLabUploadLimit = 20;
+const issueSubmitLocks = new Map<string, Promise<unknown>>();
 
 type IssueProjectSnapshot = {
   project?: {
@@ -424,8 +425,26 @@ async function writeIssueDraft(context: ServerContext, bugIds: string[]) {
 }
 
 async function submitIssueDraft(context: ServerContext, bugIds: string[]) {
-  const config = gitLabConfigFromEnv(process.env);
+  const blocking = bugIds.map((bugId) => issueSubmitLocks.get(bugId)).filter((promise): promise is Promise<unknown> => Boolean(promise));
+  if (blocking.length) {
+    await Promise.allSettled(blocking);
+    return submitIssueDraft(context, bugIds);
+  }
+  const promise = submitIssueDraftUnlocked(context, bugIds);
+  for (const bugId of bugIds) issueSubmitLocks.set(bugId, promise);
+  try {
+    return await promise;
+  } finally {
+    for (const bugId of bugIds) {
+      if (issueSubmitLocks.get(bugId) === promise) issueSubmitLocks.delete(bugId);
+    }
+  }
+}
+
+async function submitIssueDraftUnlocked(context: ServerContext, bugIds: string[]) {
   const existing = await existingSubmissionsForBugs(context, bugIds);
+  if (bugIds.every((bugId) => existing.has(bugId))) return await writeExistingIssueSubmit(context, bugIds, existing);
+  const config = gitLabConfigFromEnv(process.env);
   const pendingBugIds = bugIds.filter((bugId) => !existing.has(bugId));
   const draft = await writeIssueDraft(context, bugIds);
   const issuesToSubmit = draft.issues.filter((issue) => pendingBugIds.includes(issue.bugId));
@@ -450,6 +469,44 @@ async function submitIssueDraft(context: ServerContext, bugIds: string[]) {
   };
   await writeFile(submitPath, JSON.stringify({ schema: 'markit.gitlab-issue-submit.v1', ...result }, null, 2));
   return { ...result, submitPath };
+}
+
+async function writeExistingIssueSubmit(context: ServerContext, bugIds: string[], existing: Map<string, GitLabIssueResult>) {
+  const submissions = bugIds.map((bugId) => existing.get(bugId)).filter((submission): submission is GitLabIssueResult => Boolean(submission)).map((submission) => ({ ...submission, reused: true }));
+  const submittedAt = nowIso();
+  const stamp = submittedAt.replace(/[:.]/g, '-');
+  const draftDir = join(context.dataDir, 'issue-drafts', stamp);
+  await mkdir(draftDir, { recursive: true });
+  const submitPath = join(draftDir, 'submitted.json');
+  const markdownPath = join(draftDir, 'issues.md');
+  const jsonPath = join(draftDir, 'issues.json');
+  const result = {
+    mode: 'submit',
+    duplicate: true,
+    createdAt: submittedAt,
+    submittedAt,
+    count: submissions.length,
+    createdCount: 0,
+    skippedCount: submissions.length,
+    syncedCount: 0,
+    draftDir,
+    jsonPath,
+    markdownPath,
+    issues: [],
+    target: {
+      baseUrl: DEFAULT_GITLAB_BASE_URL,
+      projectPath: DEFAULT_ISSUE_HUB_PROJECT_PATH
+    },
+    submissions
+  };
+  await writeFile(jsonPath, JSON.stringify({ schema: 'markit.gitlab-issue-draft.v1', ...result }, null, 2));
+  await writeFile(markdownPath, renderExistingSubmitMarkdown(submissions));
+  await writeFile(submitPath, JSON.stringify({ schema: 'markit.gitlab-issue-submit.v1', ...result }, null, 2));
+  return { ...result, submitPath };
+}
+
+function renderExistingSubmitMarkdown(submissions: GitLabIssueResult[]): string {
+  return `# GitLab Issue Submit\n\nDuplicate submit was skipped locally; existing Work Items were returned.\n\n${submissions.map((submission) => `- ${submission.title}: ${submission.workItemUrl || submission.webUrl}`).join('\n')}\n`;
 }
 
 async function syncExistingGitLabIssues(issues: IssuePayload[], existing: Map<string, GitLabIssueResult>, config: GitLabConfig): Promise<GitLabIssueResult[]> {
