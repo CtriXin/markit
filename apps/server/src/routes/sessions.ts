@@ -4,6 +4,7 @@ import { Router } from 'express';
 import type { Page } from 'playwright';
 
 import type { ServerContext } from '../context.js';
+import { loadCatalog, projectSnapshotFromCatalog, resolveCatalogUrl, type ProjectSnapshot } from '../catalog.js';
 import { parseHttpUrl, MarkitHttpError } from '../url-safety.js';
 import { capturePage } from '../runtime/capture.js';
 import { asyncHandler, nowIso } from './helpers.js';
@@ -33,7 +34,8 @@ export function sessionsRouter(context: ServerContext): Router {
       currentUrl: finalUrl,
       title,
       viewport,
-      runtimeStatus: 'active'
+      runtimeStatus: 'active',
+      projectSnapshot: await resolveProjectSnapshot(url.toString(), req.body?.projectSnapshot)
     });
 
     let capture: unknown;
@@ -270,6 +272,58 @@ async function ensureSessionPage(context: ServerContext, sessionId: string, sess
   await page.goto(String(session.current_url || session.source_url), { waitUntil: 'networkidle', timeout: 30_000 });
   context.database.db.run('UPDATE sessions SET current_url = ?, title = ?, runtime_status = ?, updated_at = ? WHERE id = ?', [page.url(), await page.title(), 'active', nowIso(), sessionId]);
   return page;
+}
+
+async function resolveProjectSnapshot(url: string, provided: unknown): Promise<ProjectSnapshot | undefined> {
+  const normalized = normalizeProjectSnapshot(provided);
+  if (normalized) return normalized;
+  const catalog = await loadCatalog();
+  const resolved = resolveCatalogUrl(catalog, url);
+  if (!resolved.matched || !resolved.project) return undefined;
+  const input: Parameters<typeof projectSnapshotFromCatalog>[0] = {
+    status: resolved.status,
+    project: resolved.project,
+    source: 'catalog-resolve'
+  };
+  if (resolved.domain) input.domain = resolved.domain;
+  if (resolved.matchedHost) input.matchedHost = resolved.matchedHost;
+  return projectSnapshotFromCatalog(input);
+}
+
+function normalizeProjectSnapshot(value: unknown): ProjectSnapshot | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const input = value as Partial<ProjectSnapshot>;
+  const project = input.project;
+  if (!project?.id || !project.name) return undefined;
+  const snapshot: ProjectSnapshot = {
+    schema: 'markit.project-snapshot.v1',
+    source: input.source === 'client' ? 'client' : 'catalog-resolve',
+    capturedAt: typeof input.capturedAt === 'string' ? input.capturedAt : new Date().toISOString(),
+    project: {
+      id: String(project.id),
+      name: String(project.name),
+      status: String(project.status || 'unknown')
+    }
+  };
+  if (typeof input.catalogRoot === 'string') snapshot.catalogRoot = input.catalogRoot;
+  if (typeof input.catalogGeneratedAt === 'string') snapshot.catalogGeneratedAt = input.catalogGeneratedAt;
+  if (project.scmpService) snapshot.project.scmpService = String(project.scmpService);
+  if (project.gitlabPath) snapshot.project.gitlabPath = String(project.gitlabPath);
+  if (project.activeBranch) snapshot.project.activeBranch = String(project.activeBranch);
+  if (project.issueProjectPath) snapshot.project.issueProjectPath = String(project.issueProjectPath);
+  if (project.defaultAssignee) snapshot.project.defaultAssignee = String(project.defaultAssignee);
+  if (Array.isArray(project.labels)) snapshot.project.labels = project.labels.map(String);
+  if (typeof project.confidence === 'number') snapshot.project.confidence = project.confidence;
+  if (input.domain?.host) {
+    snapshot.domain = {
+      host: String(input.domain.host),
+      url: String(input.domain.url || `https://${input.domain.host}`),
+      env: String(input.domain.env || 'unknown'),
+      status: String(input.domain.status || 'unknown')
+    };
+    if (input.domain.matchedHost) snapshot.domain.matchedHost = String(input.domain.matchedHost);
+  }
+  return snapshot;
 }
 
 function parseViewport(value: unknown): Viewport {

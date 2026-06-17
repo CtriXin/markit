@@ -89,6 +89,33 @@ export type CatalogResolveResult = {
   project?: CatalogProject;
 };
 
+export type ProjectSnapshot = {
+  schema: 'markit.project-snapshot.v1';
+  source: 'client' | 'catalog-resolve';
+  capturedAt: string;
+  catalogRoot?: string;
+  catalogGeneratedAt?: string;
+  project: {
+    id: string;
+    name: string;
+    status: string;
+    scmpService?: string;
+    gitlabPath?: string;
+    activeBranch?: string;
+    issueProjectPath?: string;
+    defaultAssignee?: string;
+    labels?: string[];
+    confidence?: number;
+  };
+  domain?: {
+    host: string;
+    url: string;
+    env: string;
+    status: string;
+    matchedHost?: string;
+  };
+};
+
 type RawBinding = {
   consumer?: { id?: string; repo?: string };
   catalog?: { manifest?: string; domainIndex?: string; projectsGlob?: string };
@@ -229,6 +256,45 @@ export function resolveCatalogUrl(catalog: LoadedCatalog, input: string): Catalo
     return result;
   }
   return { status: catalog.status, input: trimmedInput, hostname, matched: false, reason: 'domain_not_found' };
+}
+
+export function projectSnapshotFromCatalog(input: {
+  status: CatalogStatus;
+  project: CatalogProject;
+  domain?: CatalogDomain;
+  matchedHost?: string;
+  source?: ProjectSnapshot['source'];
+  capturedAt?: string;
+}): ProjectSnapshot {
+  const snapshot: ProjectSnapshot = {
+    schema: 'markit.project-snapshot.v1',
+    source: input.source ?? 'catalog-resolve',
+    capturedAt: input.capturedAt ?? new Date().toISOString(),
+    project: {
+      id: input.project.id,
+      name: input.project.name,
+      status: input.project.status
+    }
+  };
+  if (input.status.root) snapshot.catalogRoot = input.status.root;
+  if (input.status.generatedAt) snapshot.catalogGeneratedAt = input.status.generatedAt;
+  if (input.project.scmpService) snapshot.project.scmpService = input.project.scmpService;
+  if (input.project.gitlabPath) snapshot.project.gitlabPath = input.project.gitlabPath;
+  if (input.project.activeBranch) snapshot.project.activeBranch = input.project.activeBranch;
+  if (input.project.issueProjectPath) snapshot.project.issueProjectPath = input.project.issueProjectPath;
+  if (input.project.defaultAssignee) snapshot.project.defaultAssignee = input.project.defaultAssignee;
+  if (input.project.labels?.length) snapshot.project.labels = input.project.labels;
+  if (typeof input.project.confidence === 'number') snapshot.project.confidence = input.project.confidence;
+  if (input.domain) {
+    snapshot.domain = {
+      host: input.domain.host,
+      url: input.domain.url,
+      env: input.domain.env,
+      status: input.domain.status
+    };
+    if (input.matchedHost) snapshot.domain.matchedHost = input.matchedHost;
+  }
+  return snapshot;
 }
 
 function resolveCatalogRoot(options: CatalogOptions): string {

@@ -136,5 +136,12 @@ CREATE TABLE IF NOT EXISTS bug_assets (
 
 CREATE INDEX IF NOT EXISTS idx_bug_assets_bug_id ON bug_assets(bug_id);
 `
+  },
+  {
+    version: 4,
+    name: 'session_project_snapshot',
+    sql: `
+ALTER TABLE sessions ADD COLUMN project_snapshot_json TEXT;
+`
   }
 ];

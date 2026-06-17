@@ -8,7 +8,6 @@ type DeviceKey = 'pc' | 'mobile';
 type ZoomMode = 'fit' | 'manual';
 type PreviewMode = 'single' | 'dual';
 type Viewport = { name: string; width: number; height: number; deviceScaleFactor: number; isMobile?: boolean };
-type Session = { id: string; sourceUrl: string; currentUrl: string; title: string; viewport: Viewport; sessionVersion: number; createdAt?: string };
 type Capture = { id: string; sessionId: string; finalUrl: string; title: string; imageSize: { width: number; height: number }; viewport: Viewport; sessionVersion: number; scroll: { x: number; y: number }; mode: string; createdAt: string };
 type DeviceSlot = { session: Session; capture?: Capture; captures: Capture[] };
 type Rect = { x: number; y: number; width: number; height: number };
@@ -26,6 +25,16 @@ type CatalogStatus = { schema: 'markit.catalog.status.v1'; enabled: boolean; roo
 type CatalogProject = { id: string; name: string; status: string; aliases: string[]; domainCount: number; activeDomainCount: number; pendingDomainCount: number; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; labels?: string[]; testing?: { enabled: boolean; defaultViewport: string; viewports: string[] }; confidence?: number };
 type CatalogDomain = { host: string; url: string; projectId: string; projectName: string; env: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; defaultAssignee?: string; confidence?: number };
 type CatalogResolveResult = { status: CatalogStatus; input: string; hostname?: string; matched: boolean; matchedHost?: string; reason?: string; domain?: CatalogDomain; project?: CatalogProject };
+type ProjectSnapshot = {
+  schema: 'markit.project-snapshot.v1';
+  source: 'client' | 'catalog-resolve';
+  capturedAt: string;
+  catalogRoot?: string;
+  catalogGeneratedAt?: string;
+  project: { id: string; name: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; labels?: string[]; confidence?: number };
+  domain?: { host: string; url: string; env: string; status: string; matchedHost?: string };
+};
+type Session = { id: string; sourceUrl: string; currentUrl: string; title: string; viewport: Viewport; projectSnapshot?: ProjectSnapshot; sessionVersion: number; createdAt?: string };
 
 type DraftBug = { title: string; actual: string; expected: string; severity: string; status: string; comment: string; bugType: string; requirementUrl: string; designUrl: string };
 type ActionOptions = { quiet?: boolean; checkStale?: boolean };
@@ -295,7 +304,7 @@ export function App() {
     setBusy(`正在打开${deviceLabels[selectedDevice].title}`);
     setMessage('');
     try {
-      const slot = await createDeviceSlot(selectedDevice, url, selectedViewport);
+      const slot = await createDeviceSlot(selectedDevice, url, selectedViewport, projectSnapshotForCurrentUrl());
       const nextSlots: Partial<Record<DeviceKey, DeviceSlot>> = { [selectedDevice]: slot };
       setDeviceSlots(nextSlots);
       setActiveDevice(selectedDevice);
@@ -389,6 +398,16 @@ export function App() {
     }
   }
 
+  function projectSnapshotForCurrentUrl(): ProjectSnapshot | undefined {
+    const selectedProject = catalogProjects.find((item) => item.id === selectedProjectId);
+    const selectedDomain = catalogDomains.find((item) => item.host === selectedDomainHost);
+    if (selectedProject) return snapshotFromCatalog(catalogStatus, selectedProject, selectedDomain);
+    if (catalogMatch?.matched && catalogMatch.project) {
+      return snapshotFromCatalog(catalogMatch.status, catalogMatch.project, catalogMatch.domain, catalogMatch.matchedHost);
+    }
+    return undefined;
+  }
+
   async function loadBugDetail(id: string) {
     setSelectedBugId(id);
     const detail = await api<BugDetail>(`/api/bugs/${id}`);
@@ -467,8 +486,8 @@ export function App() {
     }
   }
 
-  async function createDeviceSlot(device: DeviceKey, targetUrl: string, viewport = viewportForDevice(device)): Promise<DeviceSlot> {
-    const body = await api<{ session: Session; capture: Capture }>('/api/sessions', { method: 'POST', body: JSON.stringify({ url: targetUrl, viewport, capturePolicy: 'viewport' }) });
+  async function createDeviceSlot(device: DeviceKey, targetUrl: string, viewport = viewportForDevice(device), projectSnapshot = session?.projectSnapshot ?? projectSnapshotForCurrentUrl()): Promise<DeviceSlot> {
+    const body = await api<{ session: Session; capture: Capture }>('/api/sessions', { method: 'POST', body: JSON.stringify({ url: targetUrl, viewport, capturePolicy: 'viewport', projectSnapshot }) });
     return { session: body.session, capture: body.capture, captures: [body.capture] };
   }
 
@@ -485,7 +504,7 @@ export function App() {
     try {
       const nextSlots = { ...deviceSlots };
       for (const device of deviceOrder) {
-        if (!nextSlots[device]) nextSlots[device] = await createDeviceSlot(device, targetUrl);
+        if (!nextSlots[device]) nextSlots[device] = await createDeviceSlot(device, targetUrl, viewportForDevice(device), session?.projectSnapshot ?? projectSnapshotForCurrentUrl());
       }
       setDeviceSlots(nextSlots);
       setPreviewMode('dual');
@@ -736,7 +755,7 @@ export function App() {
     setBusy(`正在打开${deviceLabels[device].title}`);
     setMessage('');
     try {
-      const slot = await createDeviceSlot(device, targetUrl);
+      const slot = await createDeviceSlot(device, targetUrl, viewportForDevice(device), session?.projectSnapshot ?? projectSnapshotForCurrentUrl());
       setDeviceSlots((current) => ({ ...current, [device]: slot }));
       setPreviewMode('single');
       setActiveDevice(device);
@@ -997,6 +1016,7 @@ export function App() {
               <div className="mk-tab-group">
                 <span className="mk-file-tab is-active">设计文件</span>
                 <span className="mk-file-tab">{deviceLabels[activeDevice].title}</span>
+                {session.projectSnapshot ? <span className="mk-file-tab mk-project-tab">{session.projectSnapshot.project.name} · {session.projectSnapshot.domain?.host ?? '未绑定域名'}</span> : null}
               </div>
               <form className="mk-address-form" onSubmit={(event) => { event.preventDefault(); void navigateAddress('all'); }}>
                 <input data-testid="session-address" type="url" value={addressText} onChange={(event) => setAddressText(event.currentTarget.value)} placeholder="输入真实地址，例如 https://example.com" />
@@ -1371,7 +1391,13 @@ function Home(props: {
       <div className="mk-home-grid">
         <section>
           <h2>最近会话</h2>
-          {props.sessions.length ? props.sessions.slice(0, 6).map((session) => <button className="mk-session-row" key={session.id} onClick={() => props.openSession(session)}><strong>{safeHost(session.currentUrl)}</strong><span>{session.viewport.name}</span><small>{props.bugs.filter((bug) => bug.sessionId === session.id).length} 个 Bug</small></button>) : <p className="mk-empty">还没有保存会话。</p>}
+          {props.sessions.length ? props.sessions.slice(0, 6).map((session) => (
+            <button className="mk-session-row" key={session.id} onClick={() => props.openSession(session)}>
+              <strong>{session.projectSnapshot?.project.name ?? safeHost(session.currentUrl)}</strong>
+              <span>{session.projectSnapshot?.domain?.host ?? session.viewport.name}</span>
+              <small>{props.bugs.filter((bug) => bug.sessionId === session.id).length} 个 Bug</small>
+            </button>
+          )) : <p className="mk-empty">还没有保存会话。</p>}
         </section>
         <section>
               <h2>覆盖能力</h2>
@@ -1575,7 +1601,10 @@ function BugPanel(props: {
       </details>
       <details className="mk-panel-section mk-meta-list">
         <summary>截图信息</summary>
-        <dl><dt>视口</dt><dd>{props.capture.viewport.name}</dd><dt>模式</dt><dd>{captureModeLabel(props.capture.mode)}</dd><dt>来源</dt><dd>{props.session.sourceUrl}</dd><dt>最终地址</dt><dd>{props.capture.finalUrl}</dd></dl>
+        <dl>
+          {props.session.projectSnapshot ? <><dt>项目</dt><dd>{props.session.projectSnapshot.project.name}</dd><dt>绑定域名</dt><dd>{props.session.projectSnapshot.domain?.host ?? '未绑定域名'}</dd><dt>当前分支</dt><dd>{props.session.projectSnapshot.project.activeBranch ?? '未记录'}</dd></> : null}
+          <dt>视口</dt><dd>{props.capture.viewport.name}</dd><dt>模式</dt><dd>{captureModeLabel(props.capture.mode)}</dd><dt>来源</dt><dd>{props.session.sourceUrl}</dd><dt>最终地址</dt><dd>{props.capture.finalUrl}</dd>
+        </dl>
       </details>
     </div>
   );
@@ -1854,6 +1883,33 @@ function safeHost(value: string): string {
 
 function catalogStatusText(value: string): string {
   return ({ active: '已验证', pending: '待确认', archived: '已归档', unknown: '未知' } as Record<string, string>)[value] ?? value;
+}
+
+function snapshotFromCatalog(status: CatalogStatus, project: CatalogProject, domain?: CatalogDomain, matchedHost?: string): ProjectSnapshot {
+  const snapshot: ProjectSnapshot = {
+    schema: 'markit.project-snapshot.v1',
+    source: 'client',
+    capturedAt: new Date().toISOString(),
+    project: {
+      id: project.id,
+      name: project.name,
+      status: project.status
+    }
+  };
+  if (status.root) snapshot.catalogRoot = status.root;
+  if (status.generatedAt) snapshot.catalogGeneratedAt = status.generatedAt;
+  if (project.scmpService) snapshot.project.scmpService = project.scmpService;
+  if (project.gitlabPath) snapshot.project.gitlabPath = project.gitlabPath;
+  if (project.activeBranch) snapshot.project.activeBranch = project.activeBranch;
+  if (project.issueProjectPath) snapshot.project.issueProjectPath = project.issueProjectPath;
+  if (project.defaultAssignee) snapshot.project.defaultAssignee = project.defaultAssignee;
+  if (project.labels?.length) snapshot.project.labels = project.labels;
+  if (typeof project.confidence === 'number') snapshot.project.confidence = project.confidence;
+  if (domain) {
+    snapshot.domain = { host: domain.host, url: domain.url, env: domain.env, status: domain.status };
+    if (matchedHost) snapshot.domain.matchedHost = matchedHost;
+  }
+  return snapshot;
 }
 
 function formatBytes(value: number): string {

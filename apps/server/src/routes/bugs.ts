@@ -165,7 +165,9 @@ async function bugDetail(context: ServerContext, id: string) {
     return capture ? mapCapture(capture) : undefined;
   }).filter(Boolean);
   const assets = await assetsForBug(context, id);
-  return { bug: { ...mapBug(bug), annotationCount: annotations.length, assetCount: assets.length }, annotations, captures, assets };
+  const session = first(context.database.db, 'SELECT * FROM sessions WHERE id = ?', [String(bug.session_id)]);
+  const projectSnapshot = session ? parseJson(session.project_snapshot_json, undefined) : undefined;
+  return { bug: { ...mapBug(bug), annotationCount: annotations.length, assetCount: assets.length }, annotations, captures, assets, projectSnapshot };
 }
 
 async function assetsForBug(context: ServerContext, id: string) {
@@ -263,15 +265,20 @@ async function exportBug(context: ServerContext, id: string) {
   return { exportPath: exportDir, markdown };
 }
 
-function renderMarkdown(detail: { bug: ReturnType<typeof mapBug>; annotations: unknown[]; assets?: ReturnType<typeof mapBugAsset>[] }, groups: Map<string, Row[]>): string {
+function renderMarkdown(detail: { bug: ReturnType<typeof mapBug>; annotations: unknown[]; assets?: ReturnType<typeof mapBugAsset>[]; projectSnapshot?: any }, groups: Map<string, Row[]>): string {
   const bug = detail.bug;
+  const project = detail.projectSnapshot?.project;
+  const domain = detail.projectSnapshot?.domain;
+  const projectLines = project
+    ? `- Project: ${project.name} (${project.id})\n- Domain: ${domain?.host ?? 'none'}${domain?.status ? ` / ${domain.status}` : ''}\n- Branch: ${project.activeBranch ?? 'none'}\n- GitLab: ${project.issueProjectPath ?? project.gitlabPath ?? 'none'}\n`
+    : '';
   const references = bug.references.length
     ? `\n## References\n\n${bug.references.map((reference) => `- ${reference.label ?? reference.kind}: ${reference.url}`).join('\n')}\n`
     : '';
   const assets = detail.assets?.length
     ? `\n## Compare Screenshots\n\n${detail.assets.map((asset) => `- ${asset.label || asset.kind}: [${asset.fileName}](assets/${exportedAssetName(asset)})`).join('\n')}\n`
     : '';
-  return `# ${bug.title}\n\n- Severity: ${bug.severity}\n- Status: ${bug.status}\n- Source URL: ${bug.sourceUrl}\n- Final URL: ${bug.finalUrl}\n- Tags: ${bug.tags.join(', ') || 'none'}\n\n## Actual\n\n${bug.actual}\n\n## Expected\n\n${bug.expected}\n${references}${assets}\n## Annotations\n\n${[...groups.entries()].map(([captureId, annotations]) => `### ${captureId}\n\n${annotations.map((annotation) => `- ${annotation.id}: ${annotation.note}`).join('\n')}`).join('\n\n')}\n`;
+  return `# ${bug.title}\n\n- Severity: ${bug.severity}\n- Status: ${bug.status}\n- Source URL: ${bug.sourceUrl}\n- Final URL: ${bug.finalUrl}\n${projectLines}- Tags: ${bug.tags.join(', ') || 'none'}\n\n## Actual\n\n${bug.actual}\n\n## Expected\n\n${bug.expected}\n${references}${assets}\n## Annotations\n\n${[...groups.entries()].map(([captureId, annotations]) => `### ${captureId}\n\n${annotations.map((annotation) => `- ${annotation.id}: ${annotation.note}`).join('\n')}`).join('\n\n')}\n`;
 }
 
 function exportedAssetName(asset: ReturnType<typeof mapBugAsset>): string {

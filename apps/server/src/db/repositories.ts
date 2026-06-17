@@ -61,12 +61,13 @@ export function createRepositories(db: Database) {
         title?: string;
         viewport: unknown;
         runtimeStatus: string;
+        projectSnapshot?: unknown;
       }) {
         const ts = now();
         db.run(
-          `INSERT INTO sessions (id, source_url, current_url, title, viewport_json, runtime_status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [input.id, input.sourceUrl, input.currentUrl, input.title ?? '', json(input.viewport), input.runtimeStatus, ts, ts]
+          `INSERT INTO sessions (id, source_url, current_url, title, viewport_json, runtime_status, project_snapshot_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [input.id, input.sourceUrl, input.currentUrl, input.title ?? '', json(input.viewport), input.runtimeStatus, input.projectSnapshot ? json(input.projectSnapshot) : null, ts, ts]
         );
       },
       get(id: string) {

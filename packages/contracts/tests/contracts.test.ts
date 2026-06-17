@@ -11,6 +11,7 @@ import {
   markitCaptureSchema,
   normalizeBugRequestSchema,
   markitSessionSchema,
+  projectSnapshotSchema,
   rectSchema,
   viewportPresets,
   viewportSchema,
@@ -34,6 +35,29 @@ const target = {
   captureRect: rect,
   visible: true
 };
+const projectSnapshot = {
+  schema: 'markit.project-snapshot.v1',
+  source: 'catalog-resolve',
+  capturedAt: now,
+  catalogRoot: '/Users/xin/ptc-wiki',
+  catalogGeneratedAt: now,
+  project: {
+    id: 'ptc-demo',
+    name: 'Demo Project',
+    status: 'active',
+    scmpService: 'ptc-demo',
+    gitlabPath: 'ptc/fe/demo',
+    activeBranch: 'release-1.2.3',
+    labels: ['markit', 'bug'],
+    confidence: 0.99
+  },
+  domain: {
+    host: 'demo.example.com',
+    url: 'https://demo.example.com',
+    env: 'prod',
+    status: 'active'
+  }
+};
 
 describe('core DTO contracts', () => {
   it('validates viewport presets from implementation plan', () => {
@@ -48,11 +72,13 @@ describe('core DTO contracts', () => {
       currentUrl: 'https://example.com/home',
       title: 'Example',
       viewport,
+      projectSnapshot,
       sessionVersion: 1,
       runtimeStatus: 'active',
       createdAt: now,
       updatedAt: now
     }).sessionVersion).toBe(1);
+    expect(projectSnapshotSchema.parse(projectSnapshot).project.name).toBe('Demo Project');
 
     expect(markitCaptureSchema.parse({
       id: 'cap_1',

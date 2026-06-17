@@ -23,6 +23,8 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('Project Catalog');
     expect(source).toContain('data-testid="catalog-project-select"');
     expect(source).toContain('直接输入 URL 仍可测试');
+    expect(source).toContain('projectSnapshot');
+    expect(source).toContain('绑定域名');
     expect(source).not.toMatch(/ChatComposer|project\/run/i);
   });
 });

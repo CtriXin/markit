@@ -3,6 +3,13 @@ import { applyMigrations, createMemoryDatabase } from '../src/db/migrations.js';
 import { createRepositories } from '../src/db/repositories.js';
 
 const viewport = { name: 'Mobile 390x844', width: 390, height: 844, deviceScaleFactor: 3, isMobile: true };
+const projectSnapshot = {
+  schema: 'markit.project-snapshot.v1',
+  source: 'client',
+  capturedAt: '2026-06-17T00:00:00.000Z',
+  project: { id: 'ptc-demo', name: 'Demo Project', status: 'active', activeBranch: 'release-1.2.3' },
+  domain: { host: 'demo.example.com', url: 'https://demo.example.com', env: 'prod', status: 'active' }
+};
 const geometry = {
   pageRect: { x: 1, y: 2, width: 3, height: 4 },
   captureRect: { x: 1, y: 2, width: 3, height: 4 },
@@ -18,7 +25,8 @@ async function seededRepos() {
     sourceUrl: 'https://example.com',
     currentUrl: 'https://example.com',
     viewport,
-    runtimeStatus: 'active'
+    runtimeStatus: 'active',
+    projectSnapshot
   });
   repos.captures.insert({
     id: 'cap_1',
@@ -48,6 +56,7 @@ describe('repositories', () => {
   it('stores sessions and captures', async () => {
     const repos = await seededRepos();
     expect(repos.sessions.get('ses_1')?.runtime_status).toBe('active');
+    expect(JSON.parse(String(repos.sessions.get('ses_1')?.project_snapshot_json)).project.name).toBe('Demo Project');
     repos.sessions.updateStatus('ses_1', 'inactive');
     expect(repos.sessions.get('ses_1')?.runtime_status).toBe('inactive');
     expect(repos.captures.listBySession('ses_1')).toHaveLength(1);

@@ -8,6 +8,7 @@ export function mapSession(row: Row) {
     currentUrl: String(row.current_url),
     title: String(row.title),
     viewport: parseJson(row.viewport_json, {}),
+    projectSnapshot: parseJson(row.project_snapshot_json, undefined),
     sessionVersion: Number(row.session_version),
     runtimeStatus: String(row.runtime_status),
     createdAt: String(row.created_at),
