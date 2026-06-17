@@ -363,6 +363,14 @@
   font-weight: 850;
   text-align: center;
 }
+.mk-zoom-controls select {
+  min-height: 26px;
+  border: 0;
+  color: #f6efe4;
+  background: #24231f;
+  font-size: 12px;
+  font-weight: 850;
+}
 .mk-canvas-wrap {
   position: relative;
   min-height: 0;
@@ -373,6 +381,21 @@
   padding: 14px;
   background: var(--mk-canvas);
   cursor: default;
+}
+.mk-canvas-zoom {
+  position: sticky;
+  top: 10px;
+  z-index: 30;
+  height: 0;
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+.mk-canvas-zoom .mk-zoom-controls {
+  pointer-events: auto;
+  margin-left: 0;
+  background: rgba(25, 24, 21, .94);
+  box-shadow: 0 8px 14px rgba(15, 23, 42, .18);
 }
 .mk-device-board {
   --mk-preview-zoom: 1;
@@ -478,12 +501,11 @@
 .mk-ann-freehand { fill: none; stroke: #1677ff; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 4px rgba(22,119,255,.25)); }
 .mk-ann-label { fill: #fff; paint-order: stroke; stroke: #1f1e1b; stroke-width: 5px; font-size: 18px; font-weight: 950; pointer-events: none; }
 .mk-quick-comment-popover {
-  position: absolute;
-  z-index: 8;
+  position: fixed;
+  z-index: 120;
   display: grid;
   gap: 8px;
-  width: min(312px, calc(100% - 20px));
-  transform: translate(12px, 12px);
+  width: min(340px, calc(100vw - 24px));
   border: 1px solid rgba(18, 31, 54, .14);
   border-radius: 12px;
   padding: 10px;
@@ -491,9 +513,6 @@
   box-shadow: 0 22px 52px rgba(15, 23, 42, .22), 0 0 0 1px rgba(255,255,255,.7) inset;
   line-height: 1.35;
 }
-.mk-quick-comment-popover.is-right-anchored { transform: translate(-12px, 12px); }
-.mk-quick-comment-popover.is-bottom-anchored { transform: translate(12px, -12px); }
-.mk-quick-comment-popover.is-right-anchored.is-bottom-anchored { transform: translate(-12px, -12px); }
 .mk-quick-comment-head, .mk-quick-comment-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .mk-quick-comment-head strong { color: #172033; font-size: 13px; letter-spacing: -.01em; }
 .mk-quick-comment-head button { width: 24px; min-height: 24px; border: 0; padding: 0; color: #6b7280; background: transparent; font-size: 18px; }

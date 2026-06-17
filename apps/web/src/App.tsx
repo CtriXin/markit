@@ -1,4 +1,5 @@
-import { FormEvent, PointerEvent, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type Dispatch, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject, type SetStateAction, type SyntheticEvent as ReactSyntheticEvent, type WheelEvent as ReactWheelEvent } from 'react';
+import { FormEvent, PointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type Dispatch, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject, type SetStateAction, type SyntheticEvent as ReactSyntheticEvent, type WheelEvent as ReactWheelEvent } from 'react';
+import { createPortal } from 'react-dom';
 
 type HealthState = { kind: 'loading' } | { kind: 'ok'; version: string } | { kind: 'error'; message: string };
 type View = 'home' | 'session' | 'bugs' | 'settings';
@@ -58,6 +59,7 @@ const bugTypeOptions = [
 ] as const;
 const deviceOrder: DeviceKey[] = ['pc', 'mobile'];
 const assetMimeTypes = ['image/png', 'image/jpeg', 'image/webp'];
+const zoomPresets = [50, 75, 100, 125, 150, 200] as const;
 const deviceLabels: Record<DeviceKey, { title: string; short: string; hint: string }> = {
   pc: { title: 'PC 模拟', short: 'PC', hint: '桌面端真实截图' },
   mobile: { title: 'Mobile 模拟', short: 'Mobile', hint: '移动端真实截图' }
@@ -183,6 +185,11 @@ export function App() {
       } else if (key === 'f') {
         event.preventDefault();
         setZoomMode('fit');
+      } else if ((event.metaKey || event.ctrlKey) && ['=', '+', '-', '0'].includes(event.key)) {
+        event.preventDefault();
+        if (event.key === '-') zoomOut();
+        else if (event.key === '0') setManualZoomPercent(100);
+        else zoomIn();
       } else if (/^[1-4]$/.test(key)) {
         event.preventDefault();
         setDraft((current) => ({ ...current, severity: `P${Number(key) - 1}` }));
@@ -192,7 +199,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [view, session?.id, capture?.id, draft, selectedAnnotationIds, annotations, tool]);
+  }, [view, session?.id, capture?.id, draft, selectedAnnotationIds, annotations, tool, zoomMode, zoomPercent]);
 
   function setTool(name: Tool) {
     const shouldLockCapture = name !== 'browse' && tool === 'browse' && view === 'session';
@@ -247,7 +254,7 @@ export function App() {
       setCapture(slot.capture);
       setCaptures(slot.captures);
       setPreviewMode('single');
-      setZoomMode('fit');
+      applyDefaultZoom(selectedDevice, 'single');
       setDraft(emptyDraft);
       setDraftAssets([]);
       setQuickComment(undefined);
@@ -273,7 +280,7 @@ export function App() {
       setSession(nextSession);
       setCaptures(body.captures);
       setCapture(nextCapture);
-      setZoomMode('fit');
+      applyDefaultZoom(device, 'single');
       setDraftAssets([]);
       setQuickComment(undefined);
       setTool('browse');
@@ -392,6 +399,7 @@ export function App() {
   async function setPreview(nextMode: PreviewMode) {
     if (nextMode === 'single') {
       setPreviewMode('single');
+      applyDefaultZoom(activeDevice, 'single');
       return;
     }
     const targetUrl = capture?.finalUrl || session?.currentUrl || addressText || url;
@@ -405,6 +413,7 @@ export function App() {
       }
       setDeviceSlots(nextSlots);
       setPreviewMode('dual');
+      applyDefaultZoom(activeDevice, 'dual');
       const activeSlot = nextSlots[activeDevice] ?? nextSlots.mobile ?? nextSlots.pc;
       if (activeSlot) {
         setSession(activeSlot.session);
@@ -630,6 +639,7 @@ export function App() {
     setSession(slot.session);
     setCapture(slot.capture);
     setCaptures(slot.captures);
+    applyDefaultZoom(device, previewMode);
   }
 
   async function activateOrCreateDevice(device: DeviceKey) {
@@ -652,7 +662,7 @@ export function App() {
       setSession(slot.session);
       setCapture(slot.capture);
       setCaptures(slot.captures);
-      setZoomMode('fit');
+      applyDefaultZoom(device, 'single');
       setTool('browse');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : `打开${deviceLabels[device].title}失败`);
@@ -672,13 +682,25 @@ export function App() {
   }
 
   function zoomIn() {
-    setZoomMode('manual');
-    setZoomPercent((current) => Math.min(180, (zoomMode === 'fit' ? 100 : current) + 10));
+    setManualZoomPercent((zoomMode === 'fit' ? 100 : zoomPercent) + 25);
   }
 
   function zoomOut() {
+    setManualZoomPercent((zoomMode === 'fit' ? 100 : zoomPercent) - 25);
+  }
+
+  function setManualZoomPercent(percent: number) {
     setZoomMode('manual');
-    setZoomPercent((current) => Math.max(40, (zoomMode === 'fit' ? 90 : current) - 10));
+    setZoomPercent(Math.min(200, Math.max(50, percent)));
+  }
+
+  function applyDefaultZoom(device: DeviceKey, mode: PreviewMode = previewMode) {
+    if (mode === 'single' && device === 'mobile') {
+      setZoomMode('manual');
+      setZoomPercent(100);
+      return;
+    }
+    setZoomMode('fit');
   }
 
   function onCanvasPointerDown(event: PointerEvent<HTMLElement>) {
@@ -916,15 +938,12 @@ export function App() {
                 <button data-testid="type-action" onClick={() => runAction('type', { point: lastPoint, selector: activeTarget?.selector, text: actionText })}>输入</button>
                 <button onClick={() => runAction('key', { key: 'Enter' })}>回车</button>
               </div>
-              <div className="mk-zoom-controls" aria-label="缩放控制">
-                <button data-testid="zoom-out" onClick={zoomOut}>−</button>
-                <button data-testid="zoom-fit" className={zoomMode === 'fit' ? 'is-active' : ''} onClick={() => setZoomMode('fit')}>适应</button>
-                <span data-testid="zoom-label">{zoomMode === 'fit' ? 'Fit' : `${zoomPercent}%`}</span>
-                <button data-testid="zoom-in" onClick={zoomIn}>+</button>
-              </div>
             </div>
             <div className="mk-canvas-wrap">
-	              <div data-testid="device-board" className={['mk-device-board', previewMode === 'dual' ? 'is-dual' : 'is-single', zoomMode === 'fit' ? 'is-fit' : 'is-manual'].join(' ')} style={boardStyle}>
+              <div className="mk-canvas-zoom">
+                <ZoomControls zoomMode={zoomMode} zoomPercent={zoomPercent} setFit={() => setZoomMode('fit')} setManualZoomPercent={setManualZoomPercent} zoomIn={zoomIn} zoomOut={zoomOut} />
+              </div>
+              <div data-testid="device-board" className={['mk-device-board', previewMode === 'dual' ? 'is-dual' : 'is-single', zoomMode === 'fit' ? 'is-fit' : 'is-manual'].join(' ')} style={boardStyle}>
                 {visibleDevices.map((device) => (
                   <DeviceFrame
                     key={device}
@@ -975,6 +994,30 @@ export function App() {
       {view === 'bugs' ? <BugsView bugs={bugs} selectedBugId={selectedBugId} bugDetail={bugDetail} loadBugDetail={loadBugDetail} patchBug={patchBug} exportBug={exportBug} deleteBug={deleteBug} /> : null}
       {view === 'settings' ? <Settings aiStatus={aiStatus} /> : null}
     </main>
+  );
+}
+
+function ZoomControls(props: { zoomMode: ZoomMode; zoomPercent: number; setFit: () => void; setManualZoomPercent: (percent: number) => void; zoomIn: () => void; zoomOut: () => void }) {
+  const value = props.zoomMode === 'fit' ? 'fit' : String(props.zoomPercent);
+  return (
+    <div className="mk-zoom-controls" aria-label="缩放控制">
+      <button data-testid="zoom-out" onClick={props.zoomOut} aria-label="缩小画布">−</button>
+      <button data-testid="zoom-fit" className={props.zoomMode === 'fit' ? 'is-active' : ''} onClick={props.setFit}>适应</button>
+      <select
+        data-testid="zoom-preset"
+        aria-label="缩放比例"
+        value={value}
+        onChange={(event) => {
+          if (event.currentTarget.value === 'fit') props.setFit();
+          else props.setManualZoomPercent(Number(event.currentTarget.value));
+        }}
+      >
+        <option value="fit">Fit</option>
+        {zoomPresets.map((preset) => <option key={preset} value={preset}>{preset}%</option>)}
+      </select>
+      <span data-testid="zoom-label">{props.zoomMode === 'fit' ? 'Fit' : `${props.zoomPercent}%`}</span>
+      <button data-testid="zoom-in" onClick={props.zoomIn} aria-label="放大画布">+</button>
+    </div>
   );
 }
 
@@ -1055,6 +1098,7 @@ function DeviceFrame(props: {
               <QuickCommentPopover
                 comment={props.quickComment}
                 imageSize={capture.imageSize}
+                anchorRef={props.imageRef}
                 onChange={(text) => props.setQuickComment((current) => current ? { ...current, text } : current)}
                 onClose={props.onCloseQuickComment}
                 onSave={() => props.onSaveQuickComment(false)}
@@ -1100,22 +1144,45 @@ function LiveScreencastImage(props: { sessionId: string; fallbackSrc: string; im
   return <img ref={props.imageRef} draggable={false} src={props.fallbackSrc} alt={props.alt} />;
 }
 
-function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width: number; height: number }; onChange: (text: string) => void; onClose: () => void | Promise<void>; onSave: () => void | Promise<void>; onSaveBug: () => void | Promise<void> }) {
-  const rect = props.comment.rect;
-  const left = ((rect.x + Math.min(rect.width, 28)) / props.imageSize.width) * 100;
-  const top = ((rect.y + Math.min(rect.height, 28)) / props.imageSize.height) * 100;
-  const clampedLeft = Math.min(92, Math.max(3, left));
-  const clampedTop = Math.min(86, Math.max(3, top));
-  const rightAnchored = clampedLeft > 62;
-  const bottomAnchored = clampedTop > 64;
-  const style: CSSProperties = {
-    ...(rightAnchored ? { right: `${Math.min(92, Math.max(3, 100 - clampedLeft))}%` } : { left: `${clampedLeft}%` }),
-    ...(bottomAnchored ? { bottom: `${Math.min(86, Math.max(3, 100 - clampedTop))}%` } : { top: `${clampedTop}%` })
-  };
+function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width: number; height: number }; anchorRef: RefObject<HTMLImageElement | null>; onChange: (text: string) => void; onClose: () => void | Promise<void>; onSave: () => void | Promise<void>; onSaveBug: () => void | Promise<void> }) {
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden' });
+  useLayoutEffect(() => {
+    const updatePosition = () => {
+      const anchor = props.anchorRef.current;
+      if (!anchor) return;
+      const imageRect = anchor.getBoundingClientRect();
+      const popover = popoverRef.current;
+      const popoverWidth = popover?.offsetWidth || 340;
+      const popoverHeight = popover?.offsetHeight || 210;
+      const rect = props.comment.rect;
+      const scaleX = imageRect.width / props.imageSize.width;
+      const scaleY = imageRect.height / props.imageSize.height;
+      const anchorX = imageRect.left + (rect.x + Math.min(rect.width, 28)) * scaleX;
+      const anchorY = imageRect.top + (rect.y + Math.min(rect.height, 28)) * scaleY;
+      const gap = 12;
+      const margin = 12;
+      let left = anchorX + gap;
+      let top = anchorY + gap;
+      if (left + popoverWidth + margin > window.innerWidth) left = anchorX - popoverWidth - gap;
+      if (top + popoverHeight + margin > window.innerHeight) top = anchorY - popoverHeight - gap;
+      left = Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - popoverWidth - margin));
+      top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - popoverHeight - margin));
+      setStyle({ left, top, visibility: 'visible' });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [props.anchorRef, props.comment.rect, props.imageSize.height, props.imageSize.width]);
   const stopCanvasPropagation = (event: ReactSyntheticEvent) => event.stopPropagation();
-  return (
+  return createPortal(
     <div
-      className={['mk-quick-comment-popover', rightAnchored ? 'is-right-anchored' : '', bottomAnchored ? 'is-bottom-anchored' : ''].filter(Boolean).join(' ')}
+      ref={popoverRef}
+      className="mk-quick-comment-popover"
       data-testid="quick-comment-popover"
       style={style}
       role="dialog"
@@ -1145,7 +1212,8 @@ function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width:
         <button className="primary" data-testid="quick-comment-save-bug" onClick={() => props.onSaveBug()} disabled={!props.comment.text.trim()}>保存为 Bug</button>
       </div>
       <small className="mk-quick-comment-tip">保存评论只保留标注；保存为 Bug 会把这条标注提交成一个 Bug。点 × 会取消当前框选。</small>
-    </div>
+    </div>,
+    document.body
   );
 }
 
