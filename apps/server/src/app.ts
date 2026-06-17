@@ -4,6 +4,7 @@ import { sessionsRouter } from './routes/sessions.js';
 import { annotationsRouter } from './routes/annotations.js';
 import { bugsRouter } from './routes/bugs.js';
 import { aiRouter } from './routes/ai.js';
+import { catalogRouter } from './routes/catalog.js';
 import { settingsRouter } from './routes/settings.js';
 import { MarkitHttpError } from './url-safety.js';
 
@@ -14,7 +15,7 @@ export type HealthResponse = {
   time: string;
 };
 
-export function createApp(context?: ServerContext) {
+export function createApp(context?: ServerContext, options: { catalogRoot?: string } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: process.env.MARKIT_JSON_LIMIT || '90mb' }));
@@ -28,6 +29,8 @@ export function createApp(context?: ServerContext) {
     };
     res.json(body);
   });
+
+  app.use(catalogRouter(options.catalogRoot ? { root: options.catalogRoot } : {}));
 
   if (context) {
     app.use(sessionsRouter(context));

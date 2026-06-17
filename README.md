@@ -39,6 +39,28 @@ pnpm dev
 - 真实公网 URL smoke：`pnpm e2e:public-url` 默认访问 `https://example.com/`，验证默认单端与可选双端真实 Playwright 渲染，证据输出到 `.agent.local/evidence/public-url-smoke/`。
 - Macromoss 真实站点 smoke：`pnpm e2e:macromoss` 访问 `https://macromoss.com/`，验证真实点击跳转、圈画、section 选择与可选双端，证据输出到 `.agent.local/evidence/macromoss-real/`。
 
+## Project Catalog
+
+Markit 可以读取公共 `ptc-wiki` catalog，让首页先选项目、再选该项目绑定域名；直接输入 URL 时也会按 domain index 反查项目关系。Catalog 是 optional：路径不存在或绑定文件缺失时，Markit 会 fail open，保留原来的直接 URL 流程。
+
+```bash
+MARKIT_CATALOG_ROOT=/Users/xin/ptc-wiki pnpm dev
+```
+
+默认读取：
+
+- `integrations/markit.json`
+- `catalog/catalog.manifest.json`
+- `catalog/domains.json`
+- `catalog/projects/*.json`
+
+API：
+
+- `GET /api/catalog/status`
+- `GET /api/catalog/projects?query=...`
+- `GET /api/catalog/domains?projectId=...`
+- `GET /api/catalog/resolve?url=...`
+
 ## AI normalizer
 
 ```bash
