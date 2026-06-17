@@ -39,6 +39,20 @@ export function bugsRouter(context: ServerContext): Router {
     res.status(201).json(await bugDetail(context, id));
   }));
 
+  router.post('/api/bugs/bulk-export', asyncHandler(async (req, res) => {
+    const bugIds = bugIdsFromBody(req.body);
+    const exports = await exportBugs(context, bugIds);
+    await context.database.save();
+    res.json({ count: exports.length, exports });
+  }));
+
+  router.post('/api/bugs/issue-draft', asyncHandler(async (req, res) => {
+    const bugIds = bugIdsFromBody(req.body);
+    const draft = await writeIssueDraft(context, bugIds);
+    await context.database.save();
+    res.json(draft);
+  }));
+
   router.get('/api/bugs/:id', asyncHandler(async (req, res) => {
     res.json(await bugDetail(context, String(req.params.id)));
   }));
@@ -136,6 +150,15 @@ function normalizeReferences(value: unknown): Array<{ kind: string; url: string;
       url: String(item.url).trim(),
       ...(item.label ? { label: String(item.label).slice(0, 80) } : {})
     }));
+}
+
+function bugIdsFromBody(body: unknown): string[] {
+  const input = body && typeof body === 'object' ? body as { bugIds?: unknown } : {};
+  if (!Array.isArray(input.bugIds)) throw new MarkitHttpError(400, 'bug_ids_required', 'Missing bugIds array');
+  const bugIds = [...new Set(input.bugIds.map((id) => String(id).trim()).filter(Boolean))];
+  if (!bugIds.length) throw new MarkitHttpError(400, 'bug_ids_required', 'Select at least one bug');
+  if (bugIds.length > 100) throw new MarkitHttpError(400, 'too_many_bugs', 'Bulk actions support at most 100 bugs');
+  return bugIds;
 }
 
 function addRelation(context: ServerContext, bugId: string, annotationId: string, sortOrder: number) {
@@ -267,6 +290,84 @@ async function exportBug(context: ServerContext, id: string) {
   await writeFile(join(exportDir, 'bug.json'), JSON.stringify(detail, null, 2));
   context.database.db.run('UPDATE bugs SET export_path = ?, updated_at = ? WHERE id = ?', [exportDir, nowIso(), id]);
   return { exportPath: exportDir, markdown };
+}
+
+async function exportBugs(context: ServerContext, bugIds: string[]) {
+  const results = [];
+  for (const bugId of bugIds) {
+    const result = await exportBug(context, bugId);
+    results.push({ bugId, exportPath: result.exportPath });
+  }
+  return results;
+}
+
+async function writeIssueDraft(context: ServerContext, bugIds: string[]) {
+  const exported = await Promise.all(bugIds.map(async (bugId) => {
+    const result = await exportBug(context, bugId);
+    const detail = await bugDetail(context, bugId);
+    return { result, detail };
+  }));
+  const issues = exported
+    .map(({ result, detail }) => issuePayloadFromDetail(detail, result.markdown))
+    .sort(compareIssuePayloads);
+  const stamp = nowIso().replace(/[:.]/g, '-');
+  const draftDir = join(context.dataDir, 'issue-drafts', stamp);
+  await mkdir(draftDir, { recursive: true });
+  const payload = {
+    schema: 'markit.gitlab-issue-draft.v1',
+    mode: 'dry-run',
+    createdAt: nowIso(),
+    count: issues.length,
+    issues
+  };
+  const jsonPath = join(draftDir, 'issues.json');
+  const markdownPath = join(draftDir, 'issues.md');
+  await writeFile(jsonPath, JSON.stringify(payload, null, 2));
+  await writeFile(markdownPath, renderIssueDraftMarkdown(issues));
+  return { mode: 'dry-run', count: issues.length, draftDir, jsonPath, markdownPath, issues };
+}
+
+function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, markdown: string) {
+  const bug = detail.bug;
+  const snapshot = detail.projectSnapshot as { project?: { issueProjectPath?: string; gitlabPath?: string; defaultAssignee?: string; labels?: string[] }; domain?: { host?: string } } | undefined;
+  const project = snapshot?.project;
+  const domain = snapshot?.domain?.host ?? safeHost(bug.finalUrl);
+  const labels = [...new Set([...(project?.labels ?? ['markit', 'bug']), bug.severity, domain].filter(Boolean))];
+  return {
+    bugId: bug.id,
+    projectPath: project?.issueProjectPath ?? project?.gitlabPath ?? '',
+    assignee: project?.defaultAssignee ?? '',
+    labels,
+    severity: bug.severity,
+    domain,
+    title: `[${bug.severity}] ${domain} - ${bug.title}`,
+    description: `${markdown}\n\n---\n\nMarkit export: ${bug.exportPath ?? ''}\n`,
+    exportPath: bug.exportPath ?? '',
+    sourceUrl: bug.sourceUrl,
+    finalUrl: bug.finalUrl
+  };
+}
+
+function compareIssuePayloads(a: ReturnType<typeof issuePayloadFromDetail>, b: ReturnType<typeof issuePayloadFromDetail>) {
+  return a.domain.localeCompare(b.domain)
+    || a.title.localeCompare(b.title)
+    || severityRank(a.severity) - severityRank(b.severity);
+}
+
+function severityRank(value: string): number {
+  return ({ P0: 0, P1: 1, P2: 2, P3: 3 } as Record<string, number>)[value] ?? 99;
+}
+
+function renderIssueDraftMarkdown(issues: Array<ReturnType<typeof issuePayloadFromDetail>>) {
+  return `# GitLab Issue Drafts\n\n${issues.map((issue, index) => `## ${index + 1}. ${issue.title}\n\n- Project: ${issue.projectPath || 'not configured'}\n- Assignee: ${issue.assignee || 'not configured'}\n- Labels: ${issue.labels.join(', ')}\n- Export: ${issue.exportPath}\n- Source: ${issue.sourceUrl}\n\n${issue.description}`).join('\n\n---\n\n')}\n`;
+}
+
+function safeHost(value: string): string {
+  try {
+    return new URL(value).host;
+  } catch {
+    return value;
+  }
 }
 
 function renderMarkdown(detail: { bug: ReturnType<typeof mapBug>; annotations: unknown[]; assets?: ReturnType<typeof mapBugAsset>[]; projectSnapshot?: any }, groups: Map<string, Row[]>): string {

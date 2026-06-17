@@ -675,6 +675,22 @@ export function App() {
     if (selectedBugId === bugId) await loadBugDetail(bugId);
   }
 
+  async function bulkExportBugs(bugIds: string[]) {
+    if (!bugIds.length) return;
+    const body = await api<{ count: number; exports: Array<{ bugId: string; exportPath: string }> }>('/api/bugs/bulk-export', { method: 'POST', body: JSON.stringify({ bugIds }) });
+    setMessage(`已批量导出 ${body.count} 个 Bug。`);
+    await refreshBugs();
+    if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
+  }
+
+  async function draftGitLabIssues(bugIds: string[]) {
+    if (!bugIds.length) return;
+    const body = await api<{ count: number; draftDir: string; jsonPath: string; markdownPath: string }>('/api/bugs/issue-draft', { method: 'POST', body: JSON.stringify({ bugIds }) });
+    setMessage(`已生成 ${body.count} 个 GitLab Issue 草稿：${body.markdownPath}`);
+    await refreshBugs();
+    if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
+  }
+
   async function deleteBug(bugId: string) {
     const confirmed = window.confirm('删除这个 Bug？已保存的 Bug 记录、附件和导出文件会移除；原始截图记录不受影响。');
     if (!confirmed) return;
@@ -724,9 +740,11 @@ export function App() {
     const img = imageRef.current;
     if (!img) return { x: 0, y: 0 };
     const rect = img.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * img.naturalWidth;
+    const y = ((event.clientY - rect.top) / rect.height) * img.naturalHeight;
     return {
-      x: ((event.clientX - rect.left) / rect.width) * img.naturalWidth,
-      y: ((event.clientY - rect.top) / rect.height) * img.naturalHeight
+      x: Math.min(Math.max(0, x), img.naturalWidth),
+      y: Math.min(Math.max(0, y), img.naturalHeight)
     };
   }
 
@@ -855,6 +873,7 @@ export function App() {
   }
 
   function onCanvasWheel(event: ReactWheelEvent<HTMLElement>) {
+    event.stopPropagation();
     if (tool !== 'browse') return;
     event.preventDefault();
     if (busy || dragStartRef.current || freehandRef.current.length) return;
@@ -1114,7 +1133,7 @@ export function App() {
           </aside>
         </section>
       ) : null}
-      {view === 'bugs' ? <BugsView bugs={bugs} selectedBugId={selectedBugId} bugDetail={bugDetail} loadBugDetail={loadBugDetail} patchBug={patchBug} exportBug={exportBug} deleteBug={deleteBug} /> : null}
+      {view === 'bugs' ? <BugsView bugs={bugs} selectedBugId={selectedBugId} bugDetail={bugDetail} loadBugDetail={loadBugDetail} patchBug={patchBug} exportBug={exportBug} bulkExportBugs={bulkExportBugs} draftGitLabIssues={draftGitLabIssues} deleteBug={deleteBug} /> : null}
       {view === 'settings' ? <Settings aiStatus={aiStatus} /> : null}
     </main>
   );
@@ -1176,7 +1195,7 @@ function DeviceFrame(props: {
   const imageSrc = capture ? `/api/captures/${capture.id}/image` : '';
   const showAnnotationOverlay = props.active && props.tool !== 'browse';
   const layerStyle = props.zoomMode === 'manual' && capture
-    ? { width: `${Math.max(120, Math.round(capture.imageSize.width * (props.zoomPercent / 100)))}px` }
+    ? { width: props.device === 'pc' ? `${props.zoomPercent}%` : `${Math.max(120, Math.round(capture.imageSize.width * (props.zoomPercent / 100)))}px` }
     : undefined;
   return (
     <article data-testid={`device-${props.device}`} className={['mk-device-frame', `mk-device-${props.device}`, props.active ? 'is-active' : '', props.active && props.tool === 'browse' ? 'is-browse-tool' : '', props.active && props.tool !== 'browse' ? 'is-annotation-tool' : ''].filter(Boolean).join(' ')}>
@@ -1184,7 +1203,7 @@ function DeviceFrame(props: {
         <span><strong>{label.title}</strong><small>{capture ? `${capture.viewport.width}x${capture.viewport.height}` : label.hint}</small></span>
         <em>{props.active ? (props.tool === 'browse' ? '正在浏览' : '已锁定标注') : '点击切换'}</em>
       </button>
-      <div className="mk-device-shell">
+      <div className="mk-device-shell" onWheel={props.active ? props.onWheel : undefined}>
         {capture ? (
           <div
             data-testid={props.active ? 'canvas-layer' : undefined}
@@ -1197,7 +1216,6 @@ function DeviceFrame(props: {
             onPointerDown={props.active ? props.onPointerDown : undefined}
             onPointerMove={props.active ? props.onPointerMove : undefined}
             onPointerUp={props.active ? props.onPointerUp : undefined}
-            onWheel={props.active ? props.onWheel : undefined}
             onKeyDown={props.active ? props.onKeyDown : undefined}
           >
             {props.active && props.tool === 'browse' && props.sessionId ? (
@@ -1819,9 +1837,10 @@ type BugProjectGroup = {
   bound: boolean;
 };
 
-function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; deleteBug: (id: string) => Promise<void> }) {
+function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDetail | undefined; loadBugDetail: (id: string) => Promise<void>; patchBug: (id: string, patch: Partial<Bug>) => Promise<void>; exportBug: (id: string) => void; bulkExportBugs: (ids: string[]) => Promise<void>; draftGitLabIssues: (ids: string[]) => Promise<void>; deleteBug: (id: string) => Promise<void> }) {
   const groups = useMemo(() => groupBugsByProject(props.bugs), [props.bugs]);
   const [selectedProjectKey, setSelectedProjectKey] = useState('');
+  const [selectedBugIds, setSelectedBugIds] = useState<string[]>([]);
   const selectedBug = props.bugs.find((bug) => bug.id === props.selectedBugId);
 
   useEffect(() => {
@@ -1835,10 +1854,28 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
 
   const selectedGroup = groups.find((group) => group.key === selectedProjectKey) ?? groups[0];
   const visibleBugs = selectedGroup?.bugs ?? [];
+  const visibleBugIds = visibleBugs.map((bug) => bug.id);
+  const visibleSelectedIds = selectedBugIds.filter((id) => visibleBugIds.includes(id));
+  const allVisibleSelected = Boolean(visibleBugIds.length) && visibleSelectedIds.length === visibleBugIds.length;
 
   useEffect(() => {
     if (!props.selectedBugId && visibleBugs[0]) void props.loadBugDetail(visibleBugs[0].id);
   }, [visibleBugs, props.selectedBugId]);
+
+  useEffect(() => {
+    setSelectedBugIds((current) => current.filter((id) => props.bugs.some((bug) => bug.id === id)));
+  }, [props.bugs]);
+
+  const toggleBugSelection = (bugId: string) => {
+    setSelectedBugIds((current) => current.includes(bugId) ? current.filter((id) => id !== bugId) : [...current, bugId]);
+  };
+  const toggleCurrentProject = () => {
+    setSelectedBugIds((current) => {
+      const withoutVisible = current.filter((id) => !visibleBugIds.includes(id));
+      return allVisibleSelected ? withoutVisible : [...withoutVisible, ...visibleBugIds];
+    });
+  };
+  const selectedForAction = visibleSelectedIds.length ? visibleSelectedIds : visibleBugIds;
 
   return (
     <section className="mk-bugs-page">
@@ -1870,9 +1907,16 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
             <div><span>当前项目</span><strong>{selectedGroup?.title ?? '暂无项目'}</strong></div>
             <em>{visibleBugs.length} 个 Bug</em>
           </div>
+          <div className="mk-bulk-toolbar" data-testid="bug-bulk-toolbar">
+            <label><input type="checkbox" checked={allVisibleSelected} disabled={!visibleBugIds.length} onChange={toggleCurrentProject} />全选当前项目</label>
+            <span>{visibleSelectedIds.length ? `已选 ${visibleSelectedIds.length} 个` : '未选择时默认处理当前项目全部 Bug'}</span>
+            <button data-testid="bulk-export" disabled={!selectedForAction.length} onClick={() => void props.bulkExportBugs(selectedForAction)}>批量导出</button>
+            <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length} onClick={() => void props.draftGitLabIssues(selectedForAction)}>挂 Issue 草稿</button>
+          </div>
           <div className="mk-bug-list-stack">
             {visibleBugs.map((bug) => (
               <article data-testid="bug-card" className={bug.id === props.selectedBugId ? 'mk-bug-card is-active' : 'mk-bug-card'} key={bug.id} onClick={() => props.loadBugDetail(bug.id)}>
+                <div className="mk-card-select"><label onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={selectedBugIds.includes(bug.id)} onChange={() => toggleBugSelection(bug.id)} />选择</label></div>
                 <div className="mk-card-top"><strong>{bug.severity}</strong><span>{statusLabels[bug.status] ?? bug.status}</span></div>
                 <div className="mk-card-project"><strong>{bug.projectSnapshot?.project.name ?? '未绑定项目'}</strong><span>{bug.projectSnapshot?.domain?.host ?? safeHost(bug.finalUrl)}</span></div>
                 <div className="mk-card-tags">{bug.tags?.[0] ? <em>{bugTypeLabel(bug.tags[0])}</em> : null}<small>{safeHost(bug.finalUrl)}</small></div>
