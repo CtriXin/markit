@@ -534,6 +534,122 @@ describe('session and capture API', () => {
     }
   }, 30_000);
 
+  it('keeps existing assignee state when manual override resolves no users', async () => {
+    const item = await createBugForIssueSubmit('已有 Issue 全部负责人不存在');
+    const existingSubmitDir = join(dataDir, 'issue-drafts', 'existing-invalid-assignee');
+    await mkdir(existingSubmitDir, { recursive: true });
+    await writeFile(join(existingSubmitDir, 'submitted.json'), JSON.stringify({
+      schema: 'markit.gitlab-issue-submit.v1',
+      submissions: [{
+        bugId: item.bug.id,
+        title: '[P2] demo.example.com - 已有 Issue 全部负责人不存在',
+        projectPath: 'ptc/fe/ptc-wiki',
+        iid: 78,
+        id: 178,
+        webUrl: `${fixtureBaseUrl}/ptc/fe/ptc-wiki/-/issues/78`,
+        workItemUrl: `${fixtureBaseUrl}/ptc/fe/ptc-wiki/-/work_items/78`,
+        assignee: 'xin',
+        assignees: ['xin'],
+        assigneeIds: [503],
+        assigneeResolved: true,
+        labels: ['markit', 'bug'],
+        uploadedEvidence: []
+      }]
+    }));
+    const previousGitLab = {
+      baseUrl: process.env.MARKIT_GITLAB_BASE_URL,
+      auth: process.env.MARKIT_GITLAB_AUTH,
+      token: process.env.MARKIT_GITLAB_TOKEN
+    };
+    gitLabApiRequests.length = 0;
+    process.env.MARKIT_GITLAB_BASE_URL = fixtureBaseUrl;
+    process.env.MARKIT_GITLAB_AUTH = 'token';
+    process.env.MARKIT_GITLAB_TOKEN = 'test-token';
+    try {
+      const submitResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ bugIds: [item.bug.id], assignees: ['missinguser'] })
+      });
+      expect(submitResponse.status).toBe(200);
+      const submitBody = await submitResponse.json();
+      expect(submitBody.submissions[0]).toMatchObject({
+        reused: true,
+        synced: true,
+        assignee: 'xin',
+        assignees: ['xin'],
+        assigneeIds: [503],
+        unresolvedAssignees: ['missinguser'],
+        assigneeResolved: false
+      });
+      const updateRequest = gitLabApiRequests.find((request) => request.method === 'PUT' && request.url.includes('/issues/78'));
+      expect(updateRequest).toBeTruthy();
+      const updateBody = JSON.parse(updateRequest?.body || '{}');
+      expect(updateBody.assignee_ids).toBeUndefined();
+      expect(updateBody.description).toContain('Applied Assignees: unchanged');
+      expect(updateBody.description).toContain('Unresolved Assignees: missinguser');
+    } finally {
+      restoreEnv('MARKIT_GITLAB_BASE_URL', previousGitLab.baseUrl);
+      restoreEnv('MARKIT_GITLAB_AUTH', previousGitLab.auth);
+      restoreEnv('MARKIT_GITLAB_TOKEN', previousGitLab.token);
+    }
+  }, 30_000);
+
+  it('refreshes stale assignee warnings on existing issues', async () => {
+    const item = await createBugForIssueSubmit('旧负责人警告应清理');
+    const existingSubmitDir = join(dataDir, 'issue-drafts', 'existing-stale-warning');
+    await mkdir(existingSubmitDir, { recursive: true });
+    await writeFile(join(existingSubmitDir, 'submitted.json'), JSON.stringify({
+      schema: 'markit.gitlab-issue-submit.v1',
+      submissions: [{
+        bugId: item.bug.id,
+        title: '[P2] demo.example.com - 旧负责人警告应清理',
+        projectPath: 'ptc/fe/ptc-wiki',
+        iid: 79,
+        id: 179,
+        webUrl: `${fixtureBaseUrl}/ptc/fe/ptc-wiki/-/issues/79`,
+        workItemUrl: `${fixtureBaseUrl}/ptc/fe/ptc-wiki/-/work_items/79`,
+        assignee: 'xin',
+        assignees: ['xin'],
+        assigneeIds: [503],
+        unresolvedAssignees: ['oldmissing'],
+        assigneeResolved: false,
+        labels: ['markit', 'bug'],
+        uploadedEvidence: []
+      }]
+    }));
+    const previousGitLab = {
+      baseUrl: process.env.MARKIT_GITLAB_BASE_URL,
+      auth: process.env.MARKIT_GITLAB_AUTH,
+      token: process.env.MARKIT_GITLAB_TOKEN
+    };
+    gitLabApiRequests.length = 0;
+    process.env.MARKIT_GITLAB_BASE_URL = fixtureBaseUrl;
+    process.env.MARKIT_GITLAB_AUTH = 'token';
+    process.env.MARKIT_GITLAB_TOKEN = 'test-token';
+    try {
+      const submitResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ bugIds: [item.bug.id], assignees: ['songxin'] })
+      });
+      expect(submitResponse.status).toBe(200);
+      const submitBody = await submitResponse.json();
+      expect(submitBody.submissions[0]).toMatchObject({ assignee: 'songxin', assignees: ['songxin'], assigneeIds: [501], assigneeResolved: true });
+      expect(submitBody.submissions[0].unresolvedAssignees).toBeUndefined();
+      const updateRequest = gitLabApiRequests.find((request) => request.method === 'PUT' && request.url.includes('/issues/79'));
+      expect(updateRequest).toBeTruthy();
+      const updateBody = JSON.parse(updateRequest?.body || '{}');
+      expect(updateBody.assignee_ids).toEqual([501]);
+      expect(updateBody.description).not.toContain('Markit Assignment Warning');
+      expect(updateBody.description).not.toContain('oldmissing');
+    } finally {
+      restoreEnv('MARKIT_GITLAB_BASE_URL', previousGitLab.baseUrl);
+      restoreEnv('MARKIT_GITLAB_AUTH', previousGitLab.auth);
+      restoreEnv('MARKIT_GITLAB_TOKEN', previousGitLab.token);
+    }
+  }, 30_000);
+
   it('revives an inactive runtime page before browse actions', async () => {
     const createResponse = await fetch(`${apiBaseUrl}/api/sessions`, {
       method: 'POST',
@@ -784,7 +900,10 @@ async function handleGitLabFixture(req: IncomingMessage, res: ServerResponse) {
   const issueMatch = req.url?.match(/\/issues\/(\d+)/);
   if (req.method === 'GET' && issueMatch) {
     const iid = Number(issueMatch[1]);
-    res.end(JSON.stringify({ id: 1000 + iid, iid, web_url: `${fixtureBaseUrl}/ptc/fe/ptc-wiki/-/work_items/${iid}`, description: 'Existing issue body' }));
+    const description = iid === 79
+      ? 'Existing issue body\n\n## Markit Assignment Warning\n\n- Applied Assignees: xin\n- Unresolved Assignees: oldmissing\n'
+      : 'Existing issue body';
+    res.end(JSON.stringify({ id: 1000 + iid, iid, web_url: `${fixtureBaseUrl}/ptc/fe/ptc-wiki/-/work_items/${iid}`, description }));
     return;
   }
   if (req.method === 'PUT' && issueMatch) {

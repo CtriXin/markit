@@ -469,12 +469,14 @@ function appendProjectDomain(map: Map<string, CatalogDomain[]>, domain: CatalogD
 
 function dedupeDomains(domains: CatalogDomain[]): CatalogDomain[] {
   const seen = new Set<string>();
-  return domains.filter((domain) => {
+  const deduped: CatalogDomain[] = [];
+  for (const domain of domains.slice().reverse()) {
     const key = normalizeHost(domain.host);
-    if (seen.has(key)) return false;
+    if (seen.has(key)) continue;
     seen.add(key);
-    return true;
-  });
+    deduped.push(domain);
+  }
+  return deduped.reverse();
 }
 
 function sortDomains(domains: CatalogDomain[]): CatalogDomain[] {

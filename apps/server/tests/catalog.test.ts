@@ -55,7 +55,7 @@ describe('project catalog API', () => {
 
     const domains = await fetch(`${baseUrl}/api/catalog/domains?projectId=demo-project`).then((response) => response.json());
     expect(domains.domains).toEqual([
-      expect.objectContaining({ host: 'demo.example.com', projectId: 'demo-project', status: 'active' })
+      expect.objectContaining({ host: 'demo.example.com', projectId: 'demo-project', status: 'active', defaultAssignee: 'domain-owner', defaultAssignees: ['domain-owner'] })
     ]);
 
     const resolved = await fetch(`${baseUrl}/api/catalog/resolve?url=${encodeURIComponent('https://DEMO.example.com/path?x=1')}`).then((response) => response.json());

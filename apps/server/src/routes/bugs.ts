@@ -580,7 +580,7 @@ async function syncExistingGitLabIssues(issues: IssuePayload[], existing: Map<st
       uploadedEvidence = await uploadIssueEvidence(config, issue);
       if (uploadedEvidence.length) description = withUploadedEvidence(currentDescription || issue.description, uploadedEvidence);
     }
-    if (assigneePlan?.unresolvedAssignees.length) description = withAssigneeResolutionWarning(description, assigneePlan);
+    if (assigneePlan) description = withAssigneeResolutionWarning(description, assigneePlan);
     const body: Record<string, unknown> = {};
     if (description !== currentDescription) body.description = description;
     if (assigneePlan?.assigneeIds.length) body.assignee_ids = assigneePlan.assigneeIds;
@@ -602,7 +602,7 @@ async function syncExistingGitLabIssues(issues: IssuePayload[], existing: Map<st
       reused: true,
       synced: Boolean(Object.keys(body).length)
     };
-    if (assigneePlan) applyAssigneePlanToResult(result, assigneePlan);
+    if (assigneePlan) applyAssigneePlanToExistingResult(result, assigneePlan);
     results.push(result);
   }
   return results;
@@ -793,9 +793,14 @@ function withResolvedAssignee(description: string, configuredAssignees: string[]
 }
 
 function withAssigneeResolutionWarning(description: string, plan: IssueAssigneePlan): string {
-  if (!plan.unresolvedAssignees.length || description.includes('## Markit Assignment Warning')) return description;
-  const applied = plan.assignees.length ? formatAssignees(plan.assignees) : 'none';
-  return `${description}\n\n## Markit Assignment Warning\n\n- Applied Assignees: ${applied}\n- Unresolved Assignees: ${formatAssignees(plan.unresolvedAssignees)}\n`;
+  const cleaned = removeAssigneeResolutionWarning(description);
+  if (!plan.unresolvedAssignees.length) return cleaned;
+  const applied = plan.assignees.length ? formatAssignees(plan.assignees) : 'unchanged';
+  return `${cleaned}\n\n## Markit Assignment Warning\n\n- Applied Assignees: ${applied}\n- Unresolved Assignees: ${formatAssignees(plan.unresolvedAssignees)}\n`;
+}
+
+function removeAssigneeResolutionWarning(description: string): string {
+  return description.replace(/\n*## Markit Assignment Warning\n\n- Applied Assignees:.*(?:\n- Unresolved Assignees:.*)?(?:\n|$)/g, '').trimEnd();
 }
 
 async function resolveIssueAssigneePlan(
@@ -835,6 +840,16 @@ function applyAssigneePlanToResult(result: GitLabIssueResult, plan: IssueAssigne
   result.assigneeResolved = Boolean(plan.requestedAssignees.length) && plan.unresolvedAssignees.length === 0 && plan.assigneeIds.length === plan.requestedAssignees.length;
   if (plan.assigneeIds.length) result.assigneeIds = plan.assigneeIds;
   else delete result.assigneeIds;
+  if (plan.unresolvedAssignees.length) result.unresolvedAssignees = plan.unresolvedAssignees;
+  else delete result.unresolvedAssignees;
+}
+
+function applyAssigneePlanToExistingResult(result: GitLabIssueResult, plan: IssueAssigneePlan) {
+  if (plan.assigneeIds.length) {
+    applyAssigneePlanToResult(result, plan);
+    return;
+  }
+  result.assigneeResolved = false;
   if (plan.unresolvedAssignees.length) result.unresolvedAssignees = plan.unresolvedAssignees;
   else delete result.unresolvedAssignees;
 }
