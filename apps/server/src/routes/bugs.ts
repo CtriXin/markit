@@ -580,7 +580,7 @@ async function syncExistingGitLabIssues(issues: IssuePayload[], existing: Map<st
       uploadedEvidence = await uploadIssueEvidence(config, issue);
       if (uploadedEvidence.length) description = withUploadedEvidence(currentDescription || issue.description, uploadedEvidence);
     }
-    if (assigneePlan) description = withAssigneeResolutionWarning(description, assigneePlan);
+    if (assigneePlan) description = withAssigneeResolutionWarning(description, assigneePlan, 'unchanged');
     const body: Record<string, unknown> = {};
     if (description !== currentDescription) body.description = description;
     if (assigneePlan?.assigneeIds.length) body.assignee_ids = assigneePlan.assigneeIds;
@@ -792,10 +792,10 @@ function withResolvedAssignee(description: string, configuredAssignees: string[]
   return description.replace('- Assignee Suggestion: not configured', `- Assignee Suggestion: ${formatAssignees(assignees)} (default current GitLab user)`);
 }
 
-function withAssigneeResolutionWarning(description: string, plan: IssueAssigneePlan): string {
+function withAssigneeResolutionWarning(description: string, plan: IssueAssigneePlan, emptyAppliedLabel = 'none'): string {
   const cleaned = removeAssigneeResolutionWarning(description);
   if (!plan.unresolvedAssignees.length) return cleaned;
-  const applied = plan.assignees.length ? formatAssignees(plan.assignees) : 'unchanged';
+  const applied = plan.assignees.length ? formatAssignees(plan.assignees) : emptyAppliedLabel;
   return `${cleaned}\n\n## Markit Assignment Warning\n\n- Applied Assignees: ${applied}\n- Unresolved Assignees: ${formatAssignees(plan.unresolvedAssignees)}\n`;
 }
 

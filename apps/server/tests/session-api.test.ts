@@ -526,6 +526,45 @@ describe('session and capture API', () => {
       const issueRequest = gitLabApiRequests.find((request) => request.method === 'POST' && request.url.includes('/issues'));
       const issueBody = JSON.parse(issueRequest?.body || '{}');
       expect(issueBody.assignee_ids).toEqual([501]);
+      expect(issueBody.description).toContain('Applied Assignees: songxin');
+      expect(issueBody.description).toContain('Unresolved Assignees: missinguser');
+    } finally {
+      restoreEnv('MARKIT_GITLAB_BASE_URL', previousGitLab.baseUrl);
+      restoreEnv('MARKIT_GITLAB_AUTH', previousGitLab.auth);
+      restoreEnv('MARKIT_GITLAB_TOKEN', previousGitLab.token);
+    }
+  }, 30_000);
+
+  it('marks new issues with all-invalid manual assignees as applying none', async () => {
+    const item = await createBugForIssueSubmit('新 Issue 全部负责人不存在');
+    const previousGitLab = {
+      baseUrl: process.env.MARKIT_GITLAB_BASE_URL,
+      auth: process.env.MARKIT_GITLAB_AUTH,
+      token: process.env.MARKIT_GITLAB_TOKEN
+    };
+    gitLabApiRequests.length = 0;
+    process.env.MARKIT_GITLAB_BASE_URL = fixtureBaseUrl;
+    process.env.MARKIT_GITLAB_AUTH = 'token';
+    process.env.MARKIT_GITLAB_TOKEN = 'test-token';
+    try {
+      const submitResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ bugIds: [item.bug.id], assignees: ['missinguser'] })
+      });
+      expect(submitResponse.status).toBe(200);
+      const submitBody = await submitResponse.json();
+      expect(submitBody.submissions[0]).toMatchObject({
+        assignee: '',
+        assignees: [],
+        unresolvedAssignees: ['missinguser'],
+        assigneeResolved: false
+      });
+      expect(submitBody.submissions[0].assigneeIds).toBeUndefined();
+      const issueRequest = gitLabApiRequests.find((request) => request.method === 'POST' && request.url.includes('/issues'));
+      const issueBody = JSON.parse(issueRequest?.body || '{}');
+      expect(issueBody.assignee_ids).toBeUndefined();
+      expect(issueBody.description).toContain('Applied Assignees: none');
       expect(issueBody.description).toContain('Unresolved Assignees: missinguser');
     } finally {
       restoreEnv('MARKIT_GITLAB_BASE_URL', previousGitLab.baseUrl);
