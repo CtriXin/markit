@@ -62,6 +62,7 @@ type GitLabIssueResult = {
   assignee: string;
   assignees: string[];
   assigneeIds?: number[];
+  unresolvedAssignees?: string[];
   assigneeResolved: boolean;
   labels: string[];
   uploadedEvidence: GitLabUploadResult[];
@@ -82,6 +83,13 @@ type GitLabUploadResult = {
   url?: string;
   fullPath?: string;
   assetUrl?: string;
+};
+
+type IssueAssigneePlan = {
+  requestedAssignees: string[];
+  assignees: string[];
+  assigneeIds: number[];
+  unresolvedAssignees: string[];
 };
 
 type DirectoryEntry = {
@@ -482,7 +490,7 @@ async function submitIssueDraft(context: ServerContext, bugIds: string[], option
 
 async function submitIssueDraftUnlocked(context: ServerContext, bugIds: string[], options: IssueSubmitOptions) {
   const existing = await existingSubmissionsForBugs(context, bugIds);
-  if (bugIds.every((bugId) => existing.has(bugId))) return await writeExistingIssueSubmit(context, bugIds, existing);
+  if (!options.assignees.length && bugIds.every((bugId) => existing.has(bugId))) return await writeExistingIssueSubmit(context, bugIds, existing);
   const config = gitLabConfigFromEnv(process.env);
   const pendingBugIds = bugIds.filter((bugId) => !existing.has(bugId));
   const draft = await writeIssueDraft(context, bugIds, options);
@@ -550,6 +558,8 @@ function renderExistingSubmitMarkdown(submissions: GitLabIssueResult[]): string 
 
 async function syncExistingGitLabIssues(issues: IssuePayload[], existing: Map<string, GitLabIssueResult>, config: GitLabConfig): Promise<GitLabIssueResult[]> {
   const results: GitLabIssueResult[] = [];
+  const assigneeCache = new Map<string, number | undefined>();
+  let currentUser: GitLabCurrentUser | undefined;
   for (const issue of issues) {
     const previous = existing.get(issue.bugId);
     if (!previous) continue;
@@ -561,47 +571,39 @@ async function syncExistingGitLabIssues(issues: IssuePayload[], existing: Map<st
     const currentDescription = current?.description ?? '';
     const projectPath = previous.projectPath || issue.projectPath;
     const normalizedDescription = normalizeGitLabUploadLinks(currentDescription, config.baseUrl, projectPath);
-    if (descriptionHasDurableScreenshotEvidence(normalizedDescription)) {
-      if (normalizedDescription !== currentDescription) {
-        await gitLabRequest(
-          config,
-          `/api/v4/projects/${encodeURIComponent(projectPath)}/issues/${previous.iid}`,
-          { method: 'PUT', body: { description: normalizedDescription } }
-        );
-      }
-      results.push({
-        ...previous,
-        id: current?.id ?? previous.id,
-        iid: current?.iid ?? previous.iid,
-        webUrl: current?.web_url ?? previous.webUrl,
-        workItemUrl: `${config.baseUrl}/${projectPath}/-/work_items/${current?.iid ?? previous.iid}`,
-        remoteEvidenceCount: previous.uploadedEvidence?.length || screenshotEvidenceCount(currentDescription),
-        reused: true,
-        synced: normalizedDescription !== currentDescription
-      });
-      continue;
+    const assigneePlan = issue.assigneeSource === 'manual'
+      ? await resolveIssueAssigneePlan(config, issue, assigneeCache, async () => (currentUser ??= await resolveCurrentGitLabUser(config)))
+      : undefined;
+    let description = normalizedDescription;
+    let uploadedEvidence: GitLabUploadResult[] = [];
+    if (!descriptionHasDurableScreenshotEvidence(normalizedDescription)) {
+      uploadedEvidence = await uploadIssueEvidence(config, issue);
+      if (uploadedEvidence.length) description = withUploadedEvidence(currentDescription || issue.description, uploadedEvidence);
     }
-    const uploadedEvidence = await uploadIssueEvidence(config, issue);
-    if (!uploadedEvidence.length) {
-      results.push({ ...previous, reused: true, uploadedEvidence: previous.uploadedEvidence ?? [] });
-      continue;
-    }
-    const description = withUploadedEvidence(currentDescription || issue.description, uploadedEvidence);
-    const updated = await gitLabRequest<{ id: number; iid: number; web_url?: string }>(
-      config,
-      `/api/v4/projects/${encodeURIComponent(previous.projectPath || issue.projectPath)}/issues/${previous.iid}`,
-      { method: 'PUT', body: { description } }
-    );
-    results.push({
+    if (assigneePlan?.unresolvedAssignees.length) description = withAssigneeResolutionWarning(description, assigneePlan);
+    const body: Record<string, unknown> = {};
+    if (description !== currentDescription) body.description = description;
+    if (assigneePlan?.assigneeIds.length) body.assignee_ids = assigneePlan.assigneeIds;
+    const updated = Object.keys(body).length
+      ? await gitLabRequest<{ id: number; iid: number; web_url?: string }>(
+        config,
+        `/api/v4/projects/${encodeURIComponent(projectPath)}/issues/${previous.iid}`,
+        { method: 'PUT', body }
+      )
+      : undefined;
+    const result: GitLabIssueResult = {
       ...previous,
-      id: updated.id,
-      iid: updated.iid,
-      webUrl: updated.web_url ?? previous.webUrl,
-      workItemUrl: `${config.baseUrl}/${previous.projectPath || issue.projectPath}/-/work_items/${updated.iid}`,
-      uploadedEvidence,
+      id: updated?.id ?? current?.id ?? previous.id,
+      iid: updated?.iid ?? current?.iid ?? previous.iid,
+      webUrl: updated?.web_url ?? current?.web_url ?? previous.webUrl,
+      workItemUrl: `${config.baseUrl}/${projectPath}/-/work_items/${updated?.iid ?? current?.iid ?? previous.iid}`,
+      uploadedEvidence: uploadedEvidence.length ? uploadedEvidence : previous.uploadedEvidence ?? [],
+      remoteEvidenceCount: (uploadedEvidence.length ? uploadedEvidence.length : previous.uploadedEvidence?.length) || screenshotEvidenceCount(description),
       reused: true,
-      synced: true
-    });
+      synced: Boolean(Object.keys(body).length)
+    };
+    if (assigneePlan) applyAssigneePlanToResult(result, assigneePlan);
+    results.push(result);
   }
   return results;
 }
@@ -647,6 +649,7 @@ async function existingSubmissionsForBugs(context: ServerContext, bugIds: string
 
 function normalizeGitLabIssueResult(submission: Partial<GitLabIssueResult>): GitLabIssueResult {
   const assignees = normalizeAssignees(submission.assignees ?? submission.assignee);
+  const unresolvedAssignees = normalizeAssignees(submission.unresolvedAssignees);
   const assigneeIds = Array.isArray(submission.assigneeIds)
     ? submission.assigneeIds.map((id) => Number(id)).filter((id) => Number.isFinite(id))
     : undefined;
@@ -666,6 +669,7 @@ function normalizeGitLabIssueResult(submission: Partial<GitLabIssueResult>): Git
     uploadedEvidence: submission.uploadedEvidence ?? []
   };
   if (assigneeIds?.length) normalized.assigneeIds = assigneeIds;
+  if (unresolvedAssignees.length) normalized.unresolvedAssignees = unresolvedAssignees;
   return normalized;
 }
 
@@ -686,27 +690,26 @@ async function submitGitLabIssues(issues: IssuePayload[], config: GitLabConfig):
   let currentUser: GitLabCurrentUser | undefined;
   const results: GitLabIssueResult[] = [];
   for (const issue of issues) {
+    const assigneePlan = await resolveIssueAssigneePlan(config, issue, assigneeCache, async () => (currentUser ??= await resolveCurrentGitLabUser(config)));
     const configuredAssignees = issue.assignees.length ? issue.assignees : normalizeAssignees(issue.assignee);
-    const currentAssignee = configuredAssignees.length ? undefined : (currentUser ??= await resolveCurrentGitLabUser(config));
-    const assignees = configuredAssignees.length ? configuredAssignees : currentAssignee?.username ? [currentAssignee.username] : [];
-    const assigneeIds = configuredAssignees.length
-      ? await resolveGitLabUserIds(config, configuredAssignees, assigneeCache)
-      : currentAssignee?.id ? [currentAssignee.id] : [];
     const uploadedEvidence = await uploadIssueEvidence(config, issue);
-    const description = withUploadedEvidence(withResolvedAssignee(issue.description, configuredAssignees, assignees), uploadedEvidence);
+    const description = withUploadedEvidence(
+      withAssigneeResolutionWarning(withResolvedAssignee(issue.description, configuredAssignees, assigneePlan.assignees), assigneePlan),
+      uploadedEvidence
+    );
     const body: Record<string, unknown> = {
       title: issue.title,
       description,
       labels: issue.labels.join(',')
     };
-    if (assigneeIds.length) body.assignee_ids = assigneeIds;
+    if (assigneePlan.assigneeIds.length) body.assignee_ids = assigneePlan.assigneeIds;
     const created = await gitLabRequest<{ id: number; iid: number; web_url?: string }>(
       config,
       `/api/v4/projects/${encodeURIComponent(issue.projectPath)}/issues`,
       { method: 'POST', body }
     );
     const webUrl = created.web_url ?? `${config.baseUrl}/${issue.projectPath}/-/issues/${created.iid}`;
-    results.push({
+    const result: GitLabIssueResult = {
       bugId: issue.bugId,
       title: issue.title,
       projectPath: issue.projectPath,
@@ -714,13 +717,14 @@ async function submitGitLabIssues(issues: IssuePayload[], config: GitLabConfig):
       id: created.id,
       webUrl,
       workItemUrl: `${config.baseUrl}/${issue.projectPath}/-/work_items/${created.iid}`,
-      assignee: formatAssignees(assignees),
-      assignees,
-      assigneeIds,
-      assigneeResolved: Boolean(assignees.length) && assigneeIds.length === assignees.length,
+      assignee: '',
+      assignees: [],
+      assigneeResolved: false,
       labels: issue.labels,
       uploadedEvidence
-    });
+    };
+    applyAssigneePlanToResult(result, assigneePlan);
+    results.push(result);
   }
   return results;
 }
@@ -788,13 +792,51 @@ function withResolvedAssignee(description: string, configuredAssignees: string[]
   return description.replace('- Assignee Suggestion: not configured', `- Assignee Suggestion: ${formatAssignees(assignees)} (default current GitLab user)`);
 }
 
-async function resolveGitLabUserIds(config: GitLabConfig, usernames: string[], cache: Map<string, number | undefined>): Promise<number[]> {
-  const ids: number[] = [];
-  for (const username of usernames) {
-    const userId = await resolveGitLabUserId(config, username, cache);
-    if (userId && !ids.includes(userId)) ids.push(userId);
+function withAssigneeResolutionWarning(description: string, plan: IssueAssigneePlan): string {
+  if (!plan.unresolvedAssignees.length || description.includes('## Markit Assignment Warning')) return description;
+  const applied = plan.assignees.length ? formatAssignees(plan.assignees) : 'none';
+  return `${description}\n\n## Markit Assignment Warning\n\n- Applied Assignees: ${applied}\n- Unresolved Assignees: ${formatAssignees(plan.unresolvedAssignees)}\n`;
+}
+
+async function resolveIssueAssigneePlan(
+  config: GitLabConfig,
+  issue: IssuePayload,
+  cache: Map<string, number | undefined>,
+  currentUser: () => Promise<GitLabCurrentUser | undefined>
+): Promise<IssueAssigneePlan> {
+  const requestedAssignees = issue.assignees.length ? issue.assignees : normalizeAssignees(issue.assignee);
+  if (!requestedAssignees.length) {
+    const user = await currentUser();
+    return {
+      requestedAssignees: user?.username ? [user.username] : [],
+      assignees: user?.username ? [user.username] : [],
+      assigneeIds: user?.id ? [user.id] : [],
+      unresolvedAssignees: []
+    };
   }
-  return ids;
+  const assignees: string[] = [];
+  const assigneeIds: number[] = [];
+  const unresolvedAssignees: string[] = [];
+  for (const username of requestedAssignees) {
+    const userId = await resolveGitLabUserId(config, username, cache);
+    if (userId) {
+      assignees.push(username);
+      if (!assigneeIds.includes(userId)) assigneeIds.push(userId);
+    } else {
+      unresolvedAssignees.push(username);
+    }
+  }
+  return { requestedAssignees, assignees, assigneeIds, unresolvedAssignees };
+}
+
+function applyAssigneePlanToResult(result: GitLabIssueResult, plan: IssueAssigneePlan) {
+  result.assignee = formatAssignees(plan.assignees);
+  result.assignees = plan.assignees;
+  result.assigneeResolved = Boolean(plan.requestedAssignees.length) && plan.unresolvedAssignees.length === 0 && plan.assigneeIds.length === plan.requestedAssignees.length;
+  if (plan.assigneeIds.length) result.assigneeIds = plan.assigneeIds;
+  else delete result.assigneeIds;
+  if (plan.unresolvedAssignees.length) result.unresolvedAssignees = plan.unresolvedAssignees;
+  else delete result.unresolvedAssignees;
 }
 
 async function resolveGitLabUserId(config: GitLabConfig, username: string, cache: Map<string, number | undefined>): Promise<number | undefined> {
@@ -1021,7 +1063,7 @@ function severityRank(value: string): number {
 }
 
 function renderIssueDraftMarkdown(issues: Array<ReturnType<typeof issuePayloadFromDetail>>) {
-  return `# GitLab Issue Drafts\n\n${issues.map((issue, index) => `## ${index + 1}. ${issue.title}\n\n- Issue Hub: ${issue.projectPath}\n- Binding Status: ${issue.bindingStatus}\n- Business Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n- Domain: ${issue.domain}\n- Branch: ${issue.branch || 'not configured'}\n- Assignee: ${issue.assignee || 'not configured'}\n- Labels: ${issue.labels.join(', ')}\n- Export: ${issue.exportPath}\n- Source: ${issue.sourceUrl}\n\n${issue.description}`).join('\n\n---\n\n')}\n`;
+  return `# GitLab Issue Drafts\n\n${issues.map((issue, index) => `## ${index + 1}. ${issue.title}\n\n- Issue Hub: ${issue.projectPath}\n- Binding Status: ${issue.bindingStatus}\n- Business Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n- Domain: ${issue.domain}\n- Branch: ${issue.branch || 'not configured'}\n${renderAssigneeSuggestionLine(issue)}\n- Labels: ${issue.labels.join(', ')}\n- Export: ${issue.exportPath}\n- Source: ${issue.sourceUrl}\n\n${issue.description}`).join('\n\n---\n\n')}\n`;
 }
 
 function renderIssueDescription(issue: {

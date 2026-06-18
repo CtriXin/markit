@@ -20,7 +20,7 @@ type DraftAsset = { id: string; kind: 'pasted-screenshot' | 'uploaded-screenshot
 type QuickComment = { annotationId: string; captureId: string; rect: Rect; text: string };
 type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; projectSnapshot?: ProjectSnapshot; annotationCount?: number; assetCount?: number; exportPath?: string; issueSubmission?: IssueSubmission; createdAt?: string; updatedAt?: string };
 type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; assets: BugAsset[]; projectSnapshot?: ProjectSnapshot };
-type IssueSubmission = { bugId: string; title: string; projectPath?: string; iid?: number; id?: number; workItemUrl: string; webUrl: string; assignee?: string; assignees?: string[]; assigneeResolved?: boolean; reused?: boolean; synced?: boolean; remoteEvidenceCount?: number; uploadedEvidence?: Array<{ filePath: string; markdown: string; assetUrl?: string }> };
+type IssueSubmission = { bugId: string; title: string; projectPath?: string; iid?: number; id?: number; workItemUrl: string; webUrl: string; assignee?: string; assignees?: string[]; unresolvedAssignees?: string[]; assigneeResolved?: boolean; reused?: boolean; synced?: boolean; remoteEvidenceCount?: number; uploadedEvidence?: Array<{ filePath: string; markdown: string; assetUrl?: string }> };
 type IssueSubmitResponse = { count: number; createdCount?: number; skippedCount?: number; syncedCount?: number; duplicate?: boolean; submissions: IssueSubmission[]; submitPath: string };
 type IssueUiState = { status: 'submitting' | 'submitted' | 'reused' | 'synced' | 'error'; text?: string; submission?: IssueSubmission };
 type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
@@ -1950,7 +1950,8 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
   const selectedForAction = visibleSelectedIds.length ? visibleSelectedIds : visibleBugIds;
   const selectedForIssueSubmit = selectedForAction.filter((bugId) => !issueUiHasSubmission(issueUiByBugId[bugId]) && issueUiByBugId[bugId]?.status !== 'submitting' && !props.bugs.find((bug) => bug.id === bugId)?.issueSubmission);
   const actionRunning = bulkAction.status === 'running';
-  const issueSubmitLabel = actionRunning ? '处理中...' : selectedForAction.length && !selectedForIssueSubmit.length ? '返回已有 Issue' : '真实挂 Wiki Issue';
+  const submitIds = bulkAssignees.length ? selectedForAction : selectedForIssueSubmit;
+  const issueSubmitLabel = actionRunning ? '处理中...' : bulkAssignees.length ? '同步负责人 / 挂 Issue' : selectedForAction.length && !selectedForIssueSubmit.length ? '返回已有 Issue' : '真实挂 Wiki Issue';
   const assigneeHint = bulkAssignees.length ? `负责人：${bulkAssignees.join(', ')}` : '负责人：按项目绑定；没有绑定时默认当前 GitLab 用户';
 
   const runBulkExport = async () => {
@@ -1977,7 +1978,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
 
   const runIssueSubmit = async () => {
     if (!selectedForAction.length || actionRunning) return;
-    if (!selectedForIssueSubmit.length) {
+    if (!submitIds.length) {
       const submissions = selectedForAction
         .map((bugId) => issueUiByBugId[bugId]?.submission ?? props.bugs.find((bug) => bug.id === bugId)?.issueSubmission)
         .filter((submission): submission is IssueSubmission => Boolean(submission));
@@ -1989,12 +1990,12 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
     submitAbortRef.current = controller;
     setIssueUiByBugId((current) => {
       const next = { ...current };
-      for (const bugId of selectedForIssueSubmit) next[bugId] = { status: 'submitting', text: '正在提交到 Wiki Issue...' };
+      for (const bugId of submitIds) next[bugId] = { status: 'submitting', text: bulkAssignees.length ? '正在同步负责人 / 挂 Issue...' : '正在提交到 Wiki Issue...' };
       return next;
     });
-    setBulkAction({ status: 'running', action: 'submit', text: `正在上传截图并真实挂载 ${selectedForIssueSubmit.length} 个 Wiki Issue...`, detail: `状态：loading；${assigneeHint}；已跳过 ${selectedForAction.length - selectedForIssueSubmit.length} 个已挂载 Bug。步骤：导出 evidence -> 上传截图资源 -> 创建/同步 Work Item` });
+    setBulkAction({ status: 'running', action: 'submit', text: `正在同步 ${submitIds.length} 个 Wiki Issue...`, detail: `状态：loading；${assigneeHint}；${bulkAssignees.length ? '已挂载 Bug 会同步负责人，不会重复创建。' : `已跳过 ${selectedForAction.length - selectedForIssueSubmit.length} 个已挂载 Bug。`}步骤：导出 evidence -> 上传截图资源 -> 创建/同步 Work Item` });
     try {
-      const result = await props.submitGitLabIssues(selectedForIssueSubmit, controller.signal, bulkAssignees);
+      const result = await props.submitGitLabIssues(submitIds, controller.signal, bulkAssignees);
       const created = result.createdCount ?? result.count;
       const skipped = result.skippedCount ?? result.submissions.filter((item) => item.reused).length;
       const synced = result.syncedCount ?? result.submissions.filter((item) => item.synced).length;
@@ -2017,7 +2018,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
       } else {
         setIssueUiByBugId((current) => {
           const next = { ...current };
-          for (const bugId of selectedForIssueSubmit) next[bugId] = { status: 'error', text: error instanceof Error ? error.message : String(error) };
+          for (const bugId of submitIds) next[bugId] = { status: 'error', text: error instanceof Error ? error.message : String(error) };
           return next;
         });
         setBulkAction({ status: 'error', action: 'submit', text: `已停止：${error instanceof Error ? error.message : String(error)}`, detail: '状态：失败停止；没有确认成功前不要重复批量点击。' });
@@ -2148,8 +2149,10 @@ function parseAssigneeInput(value: string): string[] {
 
 function issueAssigneeText(submission: IssueSubmission): string {
   const assignees = submission.assignees?.length ? submission.assignees : parseAssigneeInput(submission.assignee ?? '');
-  if (!assignees.length) return '';
-  return assignees.length > 1 ? `多人 ${assignees.length}` : `负责人 ${assignees[0]}`;
+  const unresolved = submission.unresolvedAssignees ?? [];
+  const assigned = assignees.length > 1 ? `多人 ${assignees.length}` : assignees[0] ? `负责人 ${assignees[0]}` : '';
+  const warning = unresolved.length ? `未解析 ${unresolved.join(', ')}` : '';
+  return [assigned, warning].filter(Boolean).join('；');
 }
 
 function issueUiHasSubmission(state: IssueUiState | undefined): boolean {

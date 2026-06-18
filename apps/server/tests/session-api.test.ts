@@ -441,6 +441,99 @@ describe('session and capture API', () => {
     }
   }, 30_000);
 
+  it('syncs manual assignee overrides to existing issues in a mixed batch', async () => {
+    const existingBug = await createBugForIssueSubmit('已有 Issue 也同步负责人');
+    const newBug = await createBugForIssueSubmit('新 Issue 同步负责人');
+    const existingSubmitDir = join(dataDir, 'issue-drafts', 'existing-mixed-assignee');
+    await mkdir(existingSubmitDir, { recursive: true });
+    await writeFile(join(existingSubmitDir, 'submitted.json'), JSON.stringify({
+      schema: 'markit.gitlab-issue-submit.v1',
+      submissions: [{
+        bugId: existingBug.bug.id,
+        title: '[P2] demo.example.com - 已有 Issue 也同步负责人',
+        projectPath: 'ptc/fe/ptc-wiki',
+        iid: 77,
+        id: 177,
+        webUrl: `${fixtureBaseUrl}/ptc/fe/ptc-wiki/-/issues/77`,
+        workItemUrl: `${fixtureBaseUrl}/ptc/fe/ptc-wiki/-/work_items/77`,
+        assignee: 'xin',
+        assignees: ['xin'],
+        assigneeIds: [503],
+        assigneeResolved: true,
+        labels: ['markit', 'bug'],
+        uploadedEvidence: []
+      }]
+    }));
+    const previousGitLab = {
+      baseUrl: process.env.MARKIT_GITLAB_BASE_URL,
+      auth: process.env.MARKIT_GITLAB_AUTH,
+      token: process.env.MARKIT_GITLAB_TOKEN
+    };
+    gitLabApiRequests.length = 0;
+    process.env.MARKIT_GITLAB_BASE_URL = fixtureBaseUrl;
+    process.env.MARKIT_GITLAB_AUTH = 'token';
+    process.env.MARKIT_GITLAB_TOKEN = 'test-token';
+    try {
+      const submitResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ bugIds: [existingBug.bug.id, newBug.bug.id], assignees: ['songxin', 'qauser'] })
+      });
+      expect(submitResponse.status).toBe(200);
+      const submitBody = await submitResponse.json();
+      const reused = submitBody.submissions.find((submission: { bugId: string }) => submission.bugId === existingBug.bug.id);
+      const created = submitBody.submissions.find((submission: { bugId: string }) => submission.bugId === newBug.bug.id);
+      expect(reused).toMatchObject({ reused: true, synced: true, assignees: ['songxin', 'qauser'], assigneeIds: [501, 502], assigneeResolved: true });
+      expect(created).toMatchObject({ assignees: ['songxin', 'qauser'], assigneeIds: [501, 502], assigneeResolved: true });
+      const updateRequest = gitLabApiRequests.find((request) => request.method === 'PUT' && request.url.includes('/issues/77'));
+      expect(updateRequest).toBeTruthy();
+      expect(JSON.parse(updateRequest?.body || '{}').assignee_ids).toEqual([501, 502]);
+      const createRequest = gitLabApiRequests.find((request) => request.method === 'POST' && request.url.includes('/issues'));
+      expect(JSON.parse(createRequest?.body || '{}').assignee_ids).toEqual([501, 502]);
+    } finally {
+      restoreEnv('MARKIT_GITLAB_BASE_URL', previousGitLab.baseUrl);
+      restoreEnv('MARKIT_GITLAB_AUTH', previousGitLab.auth);
+      restoreEnv('MARKIT_GITLAB_TOKEN', previousGitLab.token);
+    }
+  }, 30_000);
+
+  it('reports unresolved manual assignees without showing them as applied', async () => {
+    const item = await createBugForIssueSubmit('部分负责人不存在');
+    const previousGitLab = {
+      baseUrl: process.env.MARKIT_GITLAB_BASE_URL,
+      auth: process.env.MARKIT_GITLAB_AUTH,
+      token: process.env.MARKIT_GITLAB_TOKEN
+    };
+    gitLabApiRequests.length = 0;
+    process.env.MARKIT_GITLAB_BASE_URL = fixtureBaseUrl;
+    process.env.MARKIT_GITLAB_AUTH = 'token';
+    process.env.MARKIT_GITLAB_TOKEN = 'test-token';
+    try {
+      const submitResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ bugIds: [item.bug.id], assignees: ['songxin', 'missinguser'] })
+      });
+      expect(submitResponse.status).toBe(200);
+      const submitBody = await submitResponse.json();
+      expect(submitBody.submissions[0]).toMatchObject({
+        assignee: 'songxin',
+        assignees: ['songxin'],
+        assigneeIds: [501],
+        unresolvedAssignees: ['missinguser'],
+        assigneeResolved: false
+      });
+      const issueRequest = gitLabApiRequests.find((request) => request.method === 'POST' && request.url.includes('/issues'));
+      const issueBody = JSON.parse(issueRequest?.body || '{}');
+      expect(issueBody.assignee_ids).toEqual([501]);
+      expect(issueBody.description).toContain('Unresolved Assignees: missinguser');
+    } finally {
+      restoreEnv('MARKIT_GITLAB_BASE_URL', previousGitLab.baseUrl);
+      restoreEnv('MARKIT_GITLAB_AUTH', previousGitLab.auth);
+      restoreEnv('MARKIT_GITLAB_TOKEN', previousGitLab.token);
+    }
+  }, 30_000);
+
   it('revives an inactive runtime page before browse actions', async () => {
     const createResponse = await fetch(`${apiBaseUrl}/api/sessions`, {
       method: 'POST',
@@ -639,6 +732,37 @@ describe('session and capture API', () => {
   });
 });
 
+async function createBugForIssueSubmit(title: string) {
+  const createResponse = await fetch(`${apiBaseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      url: `${fixtureBaseUrl}/index.html`,
+      viewport: { name: 'Desktop 800x500', width: 800, height: 500, deviceScaleFactor: 1 },
+      projectSnapshot
+    })
+  });
+  expect(createResponse.status).toBe(201);
+  const created = await createResponse.json();
+  const bugResponse = await fetch(`${apiBaseUrl}/api/bugs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: created.session.id,
+      title,
+      actual: '负责人同步测试。',
+      expected: 'GitLab assignee_ids 应符合本次选择。',
+      severity: 'P2',
+      status: 'draft',
+      sourceUrl: created.session.sourceUrl,
+      finalUrl: created.capture.finalUrl,
+      primaryCaptureId: created.capture.id
+    })
+  });
+  expect(bugResponse.status).toBe(201);
+  return { session: created, bug: (await bugResponse.json()).bug };
+}
+
 async function handleGitLabFixture(req: IncomingMessage, res: ServerResponse) {
   const body = await readRequestBody(req);
   gitLabApiRequests.push({ method: req.method ?? 'GET', url: req.url ?? '', body });
@@ -655,6 +779,17 @@ async function handleGitLabFixture(req: IncomingMessage, res: ServerResponse) {
       xin: { id: 503, username: 'xin', name: 'Xin' }
     };
     res.end(JSON.stringify(users[username] ? [users[username]] : []));
+    return;
+  }
+  const issueMatch = req.url?.match(/\/issues\/(\d+)/);
+  if (req.method === 'GET' && issueMatch) {
+    const iid = Number(issueMatch[1]);
+    res.end(JSON.stringify({ id: 1000 + iid, iid, web_url: `${fixtureBaseUrl}/ptc/fe/ptc-wiki/-/work_items/${iid}`, description: 'Existing issue body' }));
+    return;
+  }
+  if (req.method === 'PUT' && issueMatch) {
+    const iid = Number(issueMatch[1]);
+    res.end(JSON.stringify({ id: 1000 + iid, iid, web_url: `${fixtureBaseUrl}/ptc/fe/ptc-wiki/-/work_items/${iid}` }));
     return;
   }
   if (req.method === 'POST' && req.url?.includes('/uploads')) {

@@ -445,8 +445,13 @@ function domainFromIndex(host: string, entry: RawDomainEntry, project?: CatalogP
   const scmpService = entry.scmpService ?? project?.scmpService;
   const gitlabPath = entry.gitlabPath ?? project?.gitlabPath;
   const activeBranch = entry.activeBranch ?? project?.activeBranch;
-  const defaultAssignee = entry.defaultAssignee ?? project?.defaultAssignee;
-  const defaultAssignees = normalizeStringList(entry.defaultAssignees?.length ? entry.defaultAssignees : project?.defaultAssignees ?? defaultAssignee);
+  const defaultAssignees = normalizeStringList(
+    entry.defaultAssignees?.length ? entry.defaultAssignees
+      : entry.defaultAssignee ? entry.defaultAssignee
+        : project?.defaultAssignees?.length ? project.defaultAssignees
+          : project?.defaultAssignee
+  );
+  const defaultAssignee = defaultAssignees[0];
   if (scmpService) domain.scmpService = scmpService;
   if (gitlabPath) domain.gitlabPath = gitlabPath;
   if (activeBranch) domain.activeBranch = activeBranch;

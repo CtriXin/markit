@@ -64,7 +64,7 @@ describe('project catalog API', () => {
       hostname: 'demo.example.com',
       matchedHost: 'demo.example.com',
       project: { id: 'demo-project', name: 'Demo Project' },
-      domain: { host: 'demo.example.com', env: 'prod' }
+      domain: { host: 'demo.example.com', env: 'prod', defaultAssignee: 'domain-owner', defaultAssignees: ['domain-owner'] }
     });
   });
 
@@ -117,7 +117,7 @@ async function writeFixtureCatalog(root: string) {
         scmpService: 'ptc-demo',
         gitlabPath: 'ptc/fe/demo',
         activeBranch: 'release-1.2.3',
-        defaultAssignee: 'xin',
+        defaultAssignee: 'domain-owner',
         env: 'prod',
         status: 'active'
       }
@@ -132,7 +132,7 @@ async function writeFixtureCatalog(root: string) {
     scmp: { service: 'ptc-demo' },
     repo: { gitlabPath: 'ptc/fe/demo', activeBranch: 'release-1.2.3' },
     domains: [{ host: 'demo.example.com', env: 'prod', status: 'active' }],
-    gitlab: { issueProjectPath: 'ptc/fe/demo', defaultAssignee: 'xin', labels: ['markit', 'bug'] },
+    gitlab: { issueProjectPath: 'ptc/fe/demo', defaultAssignee: 'xin', defaultAssignees: ['project-dev', 'project-qa'], labels: ['markit', 'bug'] },
     testing: { enabled: true, defaultViewport: 'desktop-1440', viewports: ['desktop-1440', 'mobile-390'] },
     owners: { qa: ['xin'], dev: ['dev1'] },
     sources: [{ kind: 'fixture', path: 'fixture' }],

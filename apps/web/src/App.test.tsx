@@ -52,6 +52,8 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('负责人（可选，多人用逗号）');
     expect(source).toContain('parseAssigneeInput');
     expect(source).toContain('assignees');
+    expect(source).toContain('unresolvedAssignees');
+    expect(source).toContain('同步负责人 / 挂 Issue');
     expect(source).not.toMatch(/ChatComposer|project\/run/i);
   });
 });
