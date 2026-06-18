@@ -24,6 +24,7 @@ type IssueSubmission = { bugId: string; title: string; projectPath?: string; iid
 type IssueSubmitResponse = { count: number; createdCount?: number; skippedCount?: number; syncedCount?: number; duplicate?: boolean; submissions: IssueSubmission[]; submitPath: string };
 type IssueUiState = { status: 'submitting' | 'submitted' | 'reused' | 'synced' | 'error'; text?: string; submission?: IssueSubmission };
 type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
+type AiFollowup = { id: string; question: string; field: keyof DraftBug; label: string; placeholder: string };
 type CatalogStatus = { schema: 'markit.catalog.status.v1'; enabled: boolean; root: string; reason?: string; generatedAt?: string; projectCount?: number; domainCount?: number; source?: { pendingAssociations?: number }; integration?: { syncPolicy?: string } };
 type CatalogProject = { id: string; name: string; status: string; aliases: string[]; domainCount: number; activeDomainCount: number; pendingDomainCount: number; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; defaultAssignees?: string[]; labels?: string[]; testing?: { enabled: boolean; defaultViewport: string; viewports: string[] }; confidence?: number };
 type CatalogDomain = { host: string; url: string; projectId: string; projectName: string; env: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; defaultAssignee?: string; defaultAssignees?: string[]; confidence?: number };
@@ -132,6 +133,7 @@ export function App() {
   const [zoomPercent, setZoomPercent] = useState(100);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [aiFollowups, setAiFollowups] = useState<AiFollowup[]>([]);
   const imageRef = useRef<HTMLImageElement>(null);
   const lastAnnotationIdRef = useRef<string>('');
   const pendingAnnotationRef = useRef<Promise<void> | undefined>(undefined);
@@ -681,6 +683,7 @@ export function App() {
     setSelectedBugId(body.bug.id);
     setDraft(emptyDraft);
     setDraftAssets([]);
+    setAiFollowups([]);
     setQuickComment(undefined);
     cancelDrawing();
     lastAnnotationIdRef.current = '';
@@ -767,6 +770,7 @@ export function App() {
     if (!session || !capture) return;
     setBusy('AI 正在预填草稿');
     setMessage('');
+    setAiFollowups([]);
     try {
       const annotationIds = annotationIdsForDraft();
       const candidateAnnotations = annotations.filter((annotation) => !annotation.linkedBugId);
@@ -785,16 +789,20 @@ export function App() {
       if (body.result.kind === 'draft') {
         const next = body.result.draft;
         setDraft((current) => mergeAiDraft(current, next));
+        setAiFollowups([]);
         setMessage('AI 已预填到可编辑字段。');
       } else {
         const questions = unansweredAiQuestions(draft, body.result.questions ?? []);
         if (!questions.length && body.result.partialDraft) {
           setDraft((current) => mergeAiDraft(current, body.result.partialDraft));
+          setAiFollowups([]);
           setMessage('AI 已根据现有字段预填；没有再追问已填写内容。');
         } else if (!questions.length) {
+          setAiFollowups([]);
           setMessage('AI 已识别现有字段；没有需要补充的问题。');
         } else {
-          setMessage(`AI 需要补充：${questions.map((q: any) => q.question).join(' / ')}`);
+          setAiFollowups(questions.map(aiQuestionToFollowup));
+          setMessage(`AI 还有 ${questions.length} 个字段要你补充，已放到 Bug 草稿里。`);
         }
       }
     } catch (error) {
@@ -1204,7 +1212,7 @@ export function App() {
             ) : (
               <>
                 <div className="mk-panel-toolbar"><strong>检查器</strong><button data-testid="toggle-right-panel" aria-label="收起检查器" onClick={() => setRightCollapsed(true)}>›</button></div>
-                <BugPanel draft={draft} setDraft={setDraft} draftAssets={draftAssets} addDraftAssetFiles={addDraftAssetFiles} removeDraftAsset={removeDraftAsset} annotations={candidateAnnotations} selectedAnnotationIds={selectedAnnotationIds} setSelectedAnnotationIds={setSelectedAnnotationIds} saveBug={() => saveBug()} normalizeBug={normalizeBug} aiStatus={aiStatus} activeTarget={activeTarget} lastPoint={lastPoint} session={session} capture={capture} updateAnnotation={updateAnnotation} deleteAnnotation={deleteAnnotation} />
+                <BugPanel draft={draft} setDraft={setDraft} draftAssets={draftAssets} addDraftAssetFiles={addDraftAssetFiles} removeDraftAsset={removeDraftAsset} annotations={candidateAnnotations} selectedAnnotationIds={selectedAnnotationIds} setSelectedAnnotationIds={setSelectedAnnotationIds} saveBug={() => saveBug()} normalizeBug={normalizeBug} aiStatus={aiStatus} aiFollowups={aiFollowups} resolveAiFollowup={(field) => setAiFollowups((current) => current.filter((item) => item.field !== field))} clearAiFollowups={() => setAiFollowups([])} activeTarget={activeTarget} lastPoint={lastPoint} session={session} capture={capture} updateAnnotation={updateAnnotation} deleteAnnotation={deleteAnnotation} />
               </>
             )}
           </aside>
@@ -1730,6 +1738,9 @@ function BugPanel(props: {
   saveBug: () => void;
   normalizeBug: () => void;
   aiStatus: AiStatus;
+  aiFollowups: AiFollowup[];
+  resolveAiFollowup: (field: keyof DraftBug) => void;
+  clearAiFollowups: () => void;
   activeTarget: DomTarget | undefined;
   lastPoint: Point | undefined;
   session: Session;
@@ -1737,7 +1748,10 @@ function BugPanel(props: {
   updateAnnotation: (id: string, patch: Partial<Annotation>) => Promise<void>;
   deleteAnnotation: (id: string) => Promise<void>;
 }) {
-  const update = (key: keyof DraftBug, value: string) => props.setDraft((current) => ({ ...current, [key]: value }));
+  const update = (key: keyof DraftBug, value: string) => {
+    props.setDraft((current) => ({ ...current, [key]: value }));
+    if (value.trim()) props.resolveAiFollowup(key);
+  };
   const hasAnnotationText = props.annotations.some((annotation) => annotation.note.trim());
   const canSave = Boolean(props.annotations.length || props.draft.title.trim() || props.draft.actual.trim() || props.draft.comment.trim() || hasAnnotationText);
   const onAssetInput = (event: ChangeEvent<HTMLInputElement>) => {
@@ -1789,14 +1803,37 @@ function BugPanel(props: {
       </section>
       <section className="mk-panel-section mk-draft-card">
         <h2>Bug 草稿</h2>
-        <small className="mk-draft-hint">先写一句口语描述即可；AI 预填是可选的，不会自动拖慢框选流程。新建状态固定为草稿。</small>
+        <small className="mk-draft-hint">先写一句；需要结构化再点 AI 预填。新建默认草稿。</small>
         <label className="mk-primary-draft-input">一句话描述<textarea data-testid="bug-comment" value={props.draft.comment} onChange={(event) => update('comment', event.currentTarget.value)} placeholder="例如：Mobile 下拉最后一行被截断；右上角按钮点了没反应" /></label>
-        <div className="mk-two-col">
+        <div className="mk-draft-controls">
           <label>优先级<select data-testid="bug-severity" value={props.draft.severity} onChange={(event) => update('severity', event.currentTarget.value)}><option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></label>
-          <div className="mk-status-readonly"><span>状态</span><strong>{statusLabels[props.draft.status] ?? '草稿'}</strong><small>新建后在 Bug 详情里再流转</small></div>
+          <div className="mk-status-readonly" title="新建后可在 Bug 详情里流转状态"><span>状态</span><strong>{statusLabels[props.draft.status] ?? '草稿'}</strong></div>
         </div>
-        <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>AI 预填草稿（可选）{props.aiStatus.enabled ? ` · ${props.aiStatus.provider}${props.aiStatus.supportsImages ? '+图片' : ''}` : ''}</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>保存为一个 Bug</button></div>
+        <div className="mk-button-pair">
+          <button className="mk-ai-action" data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>
+            <strong>AI 预填</strong>
+            <span>{props.aiStatus.enabled ? `${props.aiStatus.provider}${props.aiStatus.supportsImages ? '+图' : ''}` : '未启用'}</span>
+          </button>
+          <button className="mk-save-action" data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>保存 Bug</button>
+        </div>
         {!props.aiStatus.enabled ? <small className="mk-draft-hint">{props.aiStatus.reason}</small> : null}
+        {props.aiFollowups.length ? (
+          <section className="mk-ai-followup" data-testid="ai-followup">
+            <div className="mk-ai-followup-head">
+              <strong>AI 需要你补充</strong>
+              <button type="button" onClick={props.clearAiFollowups}>收起</button>
+            </div>
+            {props.aiFollowups.map((item) => (
+              <label key={item.id}>
+                <span>{item.label}</span>
+                <small>{item.question}</small>
+                {item.field === 'title'
+                  ? <input value={String(props.draft[item.field] ?? '')} onChange={(event) => update(item.field, event.currentTarget.value)} placeholder={item.placeholder} />
+                  : <textarea value={String(props.draft[item.field] ?? '')} onChange={(event) => update(item.field, event.currentTarget.value)} placeholder={item.placeholder} />}
+              </label>
+            ))}
+          </section>
+        ) : null}
         <details className="mk-reference-fields mk-advanced-fields" data-testid="bug-advanced-fields">
           <summary>高级字段 / 手动微调（可选）</summary>
           <div className="mk-quick-group" data-testid="bug-type-chips">
@@ -2100,15 +2137,16 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
             <label><input type="checkbox" checked={allVisibleSelected} disabled={!visibleBugIds.length || actionRunning} onChange={toggleCurrentProject} />全选当前项目</label>
             <span>{visibleSelectedIds.length ? `已选 ${visibleSelectedIds.length} 个` : '未选择时默认处理当前项目全部 Bug'}</span>
             <label className="mk-assignee-field">
-              <span>负责人（可选，多人用逗号）</span>
+              <span>GitLab 负责人 username（可选）</span>
               <input
                 className="mk-assignee-input"
                 data-testid="bulk-assignees"
                 value={bulkAssigneeText}
                 disabled={actionRunning}
-                placeholder="默认项目绑定 / 当前 GitLab 用户；例：songxin, zhangsan"
+                placeholder="例：songxin, zhangsan"
                 onChange={(event) => setBulkAssigneeText(event.target.value)}
               />
+              <small className="mk-assignee-help">这里填人，不填则用项目绑定负责人；再没有就用当前 GitLab 用户。</small>
             </label>
             <button data-testid="bulk-export" disabled={!selectedForAction.length || actionRunning} onClick={() => void runBulkExport()}>批量导出</button>
             <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueDraft()}>挂到 Wiki Issue 草稿</button>
@@ -2308,12 +2346,51 @@ function mergeAiDraft(current: DraftBug, next: Record<string, unknown>): DraftBu
 
 function unansweredAiQuestions(draft: DraftBug, questions: Array<{ id?: string; question?: string }>) {
   return questions.filter((question) => {
-    const key = `${question.id ?? ''} ${question.question ?? ''}`.toLowerCase();
-    if (/expected|期望|应该/.test(key)) return !draft.expected.trim();
-    if (/actual|实际|表现|现象/.test(key)) return !draft.actual.trim() && !draft.title.trim() && !draft.comment.trim();
-    if (/title|标题/.test(key)) return !draft.title.trim();
-    return true;
+    const field = aiQuestionField(question);
+    if (field === 'actual') return !draft.actual.trim() && !draft.title.trim() && !draft.comment.trim();
+    return !String(draft[field] ?? '').trim();
   });
+}
+
+function aiQuestionToFollowup(question: { id?: string; question?: string }, index: number): AiFollowup {
+  const field = aiQuestionField(question);
+  const labels: Record<keyof DraftBug, string> = {
+    title: '标题',
+    actual: '实际表现',
+    expected: '期望表现',
+    comment: '一句话描述',
+    severity: '优先级',
+    status: '状态',
+    bugType: '类型',
+    requirementUrl: '需求链接',
+    designUrl: '设计链接'
+  };
+  const placeholders: Record<keyof DraftBug, string> = {
+    title: '例如：Mobile 下按钮文案被截断',
+    actual: '描述现在看到的问题现象',
+    expected: '描述你希望它应该怎么显示或交互',
+    comment: '补一句人话，后续可以再 AI 预填',
+    severity: 'P2',
+    status: 'draft',
+    bugType: 'layout',
+    requirementUrl: 'https://...',
+    designUrl: 'https://...'
+  };
+  return {
+    id: question.id || `${field}-${index}`,
+    question: question.question || `请补充${labels[field]}`,
+    field,
+    label: `填到：${labels[field]}`,
+    placeholder: placeholders[field]
+  };
+}
+
+function aiQuestionField(question: { id?: string; question?: string }): keyof DraftBug {
+  const key = `${question.id ?? ''} ${question.question ?? ''}`.toLowerCase();
+  if (/expected|期望|应该|预期/.test(key)) return 'expected';
+  if (/actual|实际|表现|现象|当前/.test(key)) return 'actual';
+  if (/title|标题/.test(key)) return 'title';
+  return 'comment';
 }
 
 function completeDraft(draft: DraftBug, target?: DomTarget, evidenceText = ''): DraftBug {

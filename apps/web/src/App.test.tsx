@@ -20,7 +20,9 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('原始需求链接');
     expect(source).toContain('Bug 草稿');
     expect(source).toContain('AI 预填草稿');
-    expect(source).toContain('保存为一个 Bug');
+    expect(source).toContain('保存 Bug');
+    expect(source).toContain('AI 需要你补充');
+    expect(source).toContain('aiFollowups');
     expect(source).toContain('linkedBugId');
     expect(source).toContain('candidateAnnotations');
     expect(source).toContain('data-testid="url-input"');
@@ -53,7 +55,8 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('提交中...');
     expect(source).toContain('返回已有 Issue');
     expect(source).toContain('bulk-assignees');
-    expect(source).toContain('负责人（可选，多人用逗号）');
+    expect(source).toContain('GitLab 负责人 username（可选）');
+    expect(source).toContain('这里填人，不填则用项目绑定负责人');
     expect(source).toContain('parseAssigneeInput');
     expect(source).toContain('assignees');
     expect(source).toContain('unresolvedAssignees');
