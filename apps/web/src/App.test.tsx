@@ -53,9 +53,15 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('selectedForIssueSubmit');
     expect(source).toContain('无需重复提交');
     expect(source).toContain('提交中...');
-    expect(source).toContain('返回已有 Issue');
+    expect(source).toContain('查看已有 Issue');
+    expect(source).toContain('issue-filter-tabs');
+    expect(source).toContain('待提');
+    expect(source).toContain('已挂');
+    expect(source).toContain('bugIssueLinked');
     expect(source).toContain('bulk-assignees');
     expect(source).toContain('GitLab 负责人 username（可选）');
+    expect(source).toContain('songxin');
+    expect(source).toContain('localStorage');
     expect(source).toContain('这里填人，不填则用项目绑定负责人');
     expect(source).toContain('parseAssigneeInput');
     expect(source).toContain('assignees');

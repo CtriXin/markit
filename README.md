@@ -67,7 +67,7 @@ API：
 
 负责人选择顺序已经留好扩展口：
 
-- 批量提交请求里的 `assignees: ["songxin", "qauser"]` 优先；Bug 列表工具栏填的是 GitLab username，不是项目名，支持多人逗号分隔。
+- 批量提交请求里的 `assignees: ["songxin", "qauser"]` 优先；Bug 列表工具栏填的是 GitLab username，不是项目名，支持多人逗号分隔。工具栏内置 `songxin` 预设，输入过的负责人会记到浏览器 localStorage，后续作为本机常用人选。
 - 其次使用 catalog / `projectSnapshot.project.defaultAssignees[]`，兼容旧的 `defaultAssignee`。
 - 都没有时，真实提交会读取当前 GitLab 登录用户并默认 assign 给自己。
 - 如果 catalog 里的默认负责人全部无法解析，新建 Work Item 不写 `assignee_ids`，body 会记录 `Applied Assignees: none` 和 `unresolvedAssignees` 线索。

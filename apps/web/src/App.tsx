@@ -23,6 +23,7 @@ type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; ass
 type IssueSubmission = { bugId: string; title: string; projectPath?: string; iid?: number; id?: number; workItemUrl: string; webUrl: string; assignee?: string; assignees?: string[]; unresolvedAssignees?: string[]; assigneeResolved?: boolean; reused?: boolean; synced?: boolean; remoteEvidenceCount?: number; uploadedEvidence?: Array<{ filePath: string; markdown: string; assetUrl?: string }> };
 type IssueSubmitResponse = { count: number; createdCount?: number; skippedCount?: number; syncedCount?: number; duplicate?: boolean; submissions: IssueSubmission[]; submitPath: string };
 type IssueUiState = { status: 'submitting' | 'submitted' | 'reused' | 'synced' | 'error'; text?: string; submission?: IssueSubmission };
+type IssueFilter = 'pending' | 'linked' | 'all';
 type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
 type AiFollowup = { id: string; question: string; field: keyof DraftBug; label: string; placeholder: string };
 type CatalogStatus = { schema: 'markit.catalog.status.v1'; enabled: boolean; root: string; reason?: string; generatedAt?: string; projectCount?: number; domainCount?: number; source?: { pendingAssociations?: number }; integration?: { syncPolicy?: string } };
@@ -78,6 +79,13 @@ const bugTypeOptions = [
 const deviceOrder: DeviceKey[] = ['pc', 'mobile'];
 const assetMimeTypes = ['image/png', 'image/jpeg', 'image/webp'];
 const zoomPresets = [50, 75, 100, 125, 150, 200] as const;
+const defaultAssigneePresets = ['songxin'];
+const assigneePresetStorageKey = 'markit.issueAssigneePresets.v1';
+const issueFilterOptions: Array<{ value: IssueFilter; label: string }> = [
+  { value: 'pending', label: '待提' },
+  { value: 'linked', label: '已挂' },
+  { value: 'all', label: '全部' }
+];
 const deviceLabels: Record<DeviceKey, { title: string; short: string; hint: string }> = {
   pc: { title: 'PC 模拟', short: 'PC', hint: '桌面端真实截图' },
   mobile: { title: 'Mobile 模拟', short: 'Mobile', hint: '移动端真实截图' }
@@ -1963,9 +1971,15 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
   const [bulkAction, setBulkAction] = useState<BulkActionState>({ status: 'idle', text: '' });
   const [issueUiByBugId, setIssueUiByBugId] = useState<Record<string, IssueUiState>>({});
   const [bulkAssigneeText, setBulkAssigneeText] = useState('');
+  const [assigneePresets, setAssigneePresets] = useState(defaultAssigneePresets);
+  const [issueFilter, setIssueFilter] = useState<IssueFilter>('pending');
   const submitAbortRef = useRef<AbortController | null>(null);
   const selectedBug = props.bugs.find((bug) => bug.id === props.selectedBugId);
   const bulkAssignees = useMemo(() => parseAssigneeInput(bulkAssigneeText), [bulkAssigneeText]);
+
+  useEffect(() => {
+    setAssigneePresets(readAssigneePresets());
+  }, []);
 
   useEffect(() => {
     if (selectedBug) {
@@ -1977,7 +1991,17 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
   }, [groups, selectedBug?.id, selectedProjectKey]);
 
   const selectedGroup = groups.find((group) => group.key === selectedProjectKey) ?? groups[0];
-  const visibleBugs = selectedGroup?.bugs ?? [];
+  const selectedGroupBugs = useMemo(() => selectedGroup?.bugs ?? [], [selectedGroup]);
+  const issueCounts = useMemo(() => {
+    const linked = selectedGroupBugs.filter((bug) => bugIssueLinked(bug, issueUiByBugId[bug.id])).length;
+    return { all: selectedGroupBugs.length, linked, pending: selectedGroupBugs.length - linked };
+  }, [issueUiByBugId, selectedGroupBugs]);
+  const visibleBugs = useMemo(() => selectedGroupBugs.filter((bug) => {
+    const linked = bugIssueLinked(bug, issueUiByBugId[bug.id]);
+    if (issueFilter === 'pending') return !linked;
+    if (issueFilter === 'linked') return linked;
+    return true;
+  }), [issueFilter, issueUiByBugId, selectedGroupBugs]);
   const visibleBugIds = visibleBugs.map((bug) => bug.id);
   const visibleSelectedIds = selectedBugIds.filter((id) => visibleBugIds.includes(id));
   const allVisibleSelected = Boolean(visibleBugIds.length) && visibleSelectedIds.length === visibleBugIds.length;
@@ -2021,8 +2045,12 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
   const selectedForIssueSubmit = selectedForAction.filter((bugId) => !issueUiHasSubmission(issueUiByBugId[bugId]) && issueUiByBugId[bugId]?.status !== 'submitting' && !props.bugs.find((bug) => bug.id === bugId)?.issueSubmission);
   const actionRunning = bulkAction.status === 'running';
   const submitIds = bulkAssignees.length ? selectedForAction : selectedForIssueSubmit;
-  const issueSubmitLabel = actionRunning ? '处理中...' : bulkAssignees.length ? '同步负责人 / 挂 Issue' : selectedForAction.length && !selectedForIssueSubmit.length ? '返回已有 Issue' : '真实挂 Wiki Issue';
+  const issueSubmitLabel = actionRunning ? '处理中...' : bulkAssignees.length ? '同步负责人 / 挂 Issue' : selectedForAction.length && !selectedForIssueSubmit.length ? '查看已有 Issue' : '真实挂 Wiki Issue';
   const assigneeHint = bulkAssignees.length ? `负责人：${bulkAssignees.join(', ')}` : '负责人：按项目绑定；没有绑定时默认当前 GitLab 用户';
+  const rememberBulkAssignees = () => {
+    if (!bulkAssignees.length) return;
+    setAssigneePresets((current) => writeAssigneePresets(mergeAssigneePresets(bulkAssignees, current)));
+  };
 
   const runBulkExport = async () => {
     if (!selectedForAction.length || actionRunning) return;
@@ -2037,6 +2065,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
 
   const runIssueDraft = async () => {
     if (!selectedForAction.length || actionRunning) return;
+    rememberBulkAssignees();
     setBulkAction({ status: 'running', action: 'draft', text: `正在生成 ${selectedForAction.length} 个 Wiki Issue 草稿...`, detail: '状态：生成草稿中' });
     try {
       const result = await props.draftGitLabIssues(selectedForAction, bulkAssignees);
@@ -2048,12 +2077,13 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
 
   const runIssueSubmit = async () => {
     if (!selectedForAction.length || actionRunning) return;
+    rememberBulkAssignees();
     if (!submitIds.length) {
       const submissions = selectedForAction
         .map((bugId) => issueUiByBugId[bugId]?.submission ?? props.bugs.find((bug) => bug.id === bugId)?.issueSubmission)
         .filter((submission): submission is IssueSubmission => Boolean(submission));
       const links = submissions.slice(0, 4).map((item, index) => ({ label: item.iid ? `已挂载 #${item.iid}` : `已挂载 #${index + 1}`, href: item.workItemUrl || item.webUrl }));
-      setBulkAction({ status: 'success', action: 'submit', text: `无需重复提交：${submissions.length} 个 Bug 已经有 Wiki Issue。`, detail: '状态：已返回已有链接；没有再次创建 GitLab Work Item。', links });
+      setBulkAction({ status: 'success', action: 'submit', text: `无需重复提交：${submissions.length} 个 Bug 已经有 Wiki Issue。`, detail: '状态：已返回已有链接；没有再次创建 GitLab Work Item。可在“已挂”队列查看。', links });
       return;
     }
     const controller = new AbortController();
@@ -2081,7 +2111,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
         const number = item.iid ? `#${item.iid}` : `#${index + 1}`;
         return { label: item.synced ? `已补图 ${number}` : item.reused ? `已存在 ${number}` : `打开 ${number}`, href: item.workItemUrl || item.webUrl };
       });
-      setBulkAction({ status: 'success', action: 'submit', text: `已完成：新建 ${created} 个，已存在 ${skipped} 个，同步补图 ${synced} 个，截图资源 ${evidenceCount} 张。`, detail: `${result.duplicate ? '后端判定为重复提交，已直接返回已有链接。' : '状态：完成；卡片已回填 Issue 状态和链接。'}`, links });
+      setBulkAction({ status: 'success', action: 'submit', text: `已完成：新建 ${created} 个，已存在 ${skipped} 个，同步补图 ${synced} 个，截图资源 ${evidenceCount} 张。`, detail: `${result.duplicate ? '后端判定为重复提交，已直接返回已有链接。' : '状态：完成；已挂载 Bug 会移入“已挂”队列。'}`, links });
     } catch (error) {
       if (isAbortError(error)) {
         setBulkAction({ status: 'stopped', action: 'submit', text: '已停止等待：本次前端等待已取消。', detail: '状态：停止；如果后台已开始提交，稍后刷新 Bug 列表会回填 GitLab 状态，避免立刻重复点击。' });
@@ -2131,11 +2161,24 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
         <div className="mk-project-bugs-column">
           <div className="mk-project-bugs-head">
             <div><span>当前项目</span><strong>{selectedGroup?.title ?? '暂无项目'}</strong></div>
-            <em>{visibleBugs.length} 个 Bug</em>
+            <em>待提 {issueCounts.pending} / 已挂 {issueCounts.linked}</em>
           </div>
           <div className="mk-bulk-toolbar" data-testid="bug-bulk-toolbar">
+            <div className="mk-issue-filter" data-testid="issue-filter-tabs" role="group" aria-label="Issue 状态筛选">
+              {issueFilterOptions.map((item) => (
+                <button
+                  type="button"
+                  key={item.value}
+                  className={issueFilter === item.value ? 'is-active' : ''}
+                  onClick={() => setIssueFilter(item.value)}
+                  disabled={actionRunning}
+                >
+                  {item.label}<span>{issueCounts[item.value]}</span>
+                </button>
+              ))}
+            </div>
             <label><input type="checkbox" checked={allVisibleSelected} disabled={!visibleBugIds.length || actionRunning} onChange={toggleCurrentProject} />全选当前项目</label>
-            <span>{visibleSelectedIds.length ? `已选 ${visibleSelectedIds.length} 个` : '未选择时默认处理当前项目全部 Bug'}</span>
+            <span>{visibleSelectedIds.length ? `已选 ${visibleSelectedIds.length} 个` : '未选择时默认处理当前队列全部 Bug'}</span>
             <label className="mk-assignee-field">
               <span>GitLab 负责人 username（可选）</span>
               <input
@@ -2145,7 +2188,12 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
                 disabled={actionRunning}
                 placeholder="例：songxin, zhangsan"
                 onChange={(event) => setBulkAssigneeText(event.target.value)}
+                onBlur={rememberBulkAssignees}
               />
+              <div className="mk-assignee-presets">
+                {assigneePresets.map((name) => <button type="button" key={name} disabled={actionRunning} onClick={() => setBulkAssigneeText(name)}>{name}</button>)}
+                {bulkAssigneeText ? <button type="button" disabled={actionRunning} onClick={() => setBulkAssigneeText('')}>清空</button> : null}
+              </div>
               <small className="mk-assignee-help">这里填人，不填则用项目绑定负责人；再没有就用当前 GitLab 用户。</small>
             </label>
             <button data-testid="bulk-export" disabled={!selectedForAction.length || actionRunning} onClick={() => void runBulkExport()}>批量导出</button>
@@ -2180,7 +2228,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
                 {bug.exportPath ? <small>{bug.exportPath}</small> : null}
               </article>
             ))}
-            {visibleBugs.length === 0 ? <p className="mk-empty">这个项目还没有 Bug。</p> : null}
+            {visibleBugs.length === 0 ? <p className="mk-empty">{selectedGroupBugs.length ? '当前队列没有 Bug；切到“已挂”或“全部”查看已提交记录。' : '这个项目还没有 Bug。'}</p> : null}
           </div>
         </div>
         <BugDetailPanel detail={props.bugDetail} issueState={props.bugDetail ? issueUiByBugId[props.bugDetail.bug.id] : undefined} patchBug={props.patchBug} exportBug={props.exportBug} deleteBug={props.deleteBug} />
@@ -2216,6 +2264,33 @@ function IssueStatusPill({ submission, state, detail = false }: { submission: Is
 
 function parseAssigneeInput(value: string): string[] {
   return [...new Set(value.split(/[,，、;；\n]+/).map((item) => item.trim()).filter(Boolean))];
+}
+
+function readAssigneePresets(): string[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(assigneePresetStorageKey) || '[]');
+    return mergeAssigneePresets(Array.isArray(stored) ? stored.filter((item): item is string => typeof item === 'string') : [], defaultAssigneePresets);
+  } catch {
+    return defaultAssigneePresets;
+  }
+}
+
+function writeAssigneePresets(items: string[]): string[] {
+  const presets = mergeAssigneePresets(items, defaultAssigneePresets);
+  try {
+    localStorage.setItem(assigneePresetStorageKey, JSON.stringify(presets));
+  } catch {
+    // localStorage may be unavailable in private contexts; keep in-memory presets.
+  }
+  return presets;
+}
+
+function mergeAssigneePresets(input: string[], fallback: string[]): string[] {
+  return [...new Set([...input, ...fallback, ...defaultAssigneePresets].map((item) => item.trim()).filter(Boolean))].slice(0, 8);
+}
+
+function bugIssueLinked(bug: Bug, state: IssueUiState | undefined): boolean {
+  return Boolean(bug.issueSubmission || issueUiHasSubmission(state) || state?.status === 'submitting');
 }
 
 function issueAssigneeText(submission: IssueSubmission): string {
