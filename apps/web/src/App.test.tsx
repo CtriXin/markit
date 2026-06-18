@@ -16,9 +16,13 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('截图 / 对比证据');
     expect(source).toContain('Cmd+V 粘贴截图');
     expect(source).toContain('快速评论');
+    expect(source).toContain('待归类标注');
     expect(source).toContain('原始需求链接');
     expect(source).toContain('Bug 草稿');
+    expect(source).toContain('AI 预填草稿');
     expect(source).toContain('保存为一个 Bug');
+    expect(source).toContain('linkedBugId');
+    expect(source).toContain('candidateAnnotations');
     expect(source).toContain('data-testid="url-input"');
     expect(source).toContain('Project Catalog');
     expect(source).toContain('可测试项目');

@@ -12,7 +12,21 @@ export function annotationsRouter(context: ServerContext): Router {
 
   router.get('/api/captures/:id/annotations', (req, res) => {
     const captureId = String(req.params.id);
-    res.json({ annotations: all(context.database.db, 'SELECT * FROM annotations WHERE capture_id = ? ORDER BY created_at ASC', [captureId]).map(mapAnnotation) });
+    const rows = all(
+      context.database.db,
+      `SELECT annotations.*, linked.bug_id AS linked_bug_id, linked.title AS linked_bug_title
+       FROM annotations
+       LEFT JOIN (
+         SELECT bug_annotations.annotation_id, bug_annotations.bug_id, bugs.title
+         FROM bug_annotations
+         JOIN bugs ON bugs.id = bug_annotations.bug_id
+         GROUP BY bug_annotations.annotation_id
+       ) linked ON linked.annotation_id = annotations.id
+       WHERE annotations.capture_id = ?
+       ORDER BY annotations.created_at ASC`,
+      [captureId]
+    );
+    res.json({ annotations: rows.map(mapAnnotation) });
   });
 
   router.post('/api/captures/:id/annotations', asyncHandler(async (req, res) => {

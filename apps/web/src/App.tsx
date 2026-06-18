@@ -13,7 +13,7 @@ type DeviceSlot = { session: Session; capture?: Capture; captures: Capture[] };
 type Rect = { x: number; y: number; width: number; height: number };
 type Point = { x: number; y: number };
 type DomTarget = { id: string; selector: string; selectorKind: string; selectorScore: number; label: string; tagName: string; text: string; value?: string; htmlHint: string; captureRect: Rect };
-type Annotation = { id: string; captureId: string; kind: string; geometry: { captureRect: Rect; paths?: Point[][] }; target?: DomTarget; note: string; colorRole: string; sortOrder?: number };
+type Annotation = { id: string; captureId: string; kind: string; geometry: { captureRect: Rect; paths?: Point[][] }; target?: DomTarget; note: string; colorRole: string; sortOrder?: number; linkedBugId?: string; linkedBugTitle?: string };
 type BugReference = { kind: 'requirement' | 'design' | 'compare' | 'other'; url: string; label?: string };
 type BugAsset = { id: string; bugId: string; kind: string; fileName: string; mimeType: string; sizeBytes: number; label?: string; createdAt: string };
 type DraftAsset = { id: string; kind: 'pasted-screenshot' | 'uploaded-screenshot'; fileName: string; mimeType: string; sizeBytes: number; dataUrl: string; label: string };
@@ -588,7 +588,13 @@ export function App() {
 
   async function updateAnnotation(id: string, patch: Partial<Annotation>) {
     const body = await api<{ annotation: Annotation }>(`/api/annotations/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
-    setAnnotations((current) => current.map((annotation) => annotation.id === id ? body.annotation : annotation));
+    setAnnotations((current) => current.map((annotation) => {
+      if (annotation.id !== id) return annotation;
+      const next = { ...body.annotation };
+      if (annotation.linkedBugId) next.linkedBugId = annotation.linkedBugId;
+      if (annotation.linkedBugTitle) next.linkedBugTitle = annotation.linkedBugTitle;
+      return next;
+    }));
     if (selectedBugId) await loadBugDetail(selectedBugId);
   }
 
@@ -602,7 +608,7 @@ export function App() {
       setDraft(nextDraft);
       await saveBug(nextDraft, [quickComment.annotationId]);
     } else {
-      setMessage('已保存标注评论；它仍留在“本次标注”，可继续勾选后合并为一个 Bug。');
+      setMessage('已保存为待归类标注；可在左侧或右侧候选区继续合并成 Bug。');
       dismissQuickComment();
     }
   }
@@ -618,7 +624,7 @@ export function App() {
   }
 
   async function undoLastAnnotation() {
-    const id = selectedAnnotationIds.at(-1) || lastAnnotationIdRef.current || annotations.at(-1)?.id;
+    const id = annotationIdsForDraft().at(-1);
     if (!id) {
       setMessage('没有可撤销的标注。');
       return;
@@ -627,14 +633,25 @@ export function App() {
     setMessage('已撤销最近标注。');
   }
 
+  function annotationIdsForDraft(annotationIdsOverride?: string[]) {
+    const linkedIds = new Set(annotations.filter((annotation) => annotation.linkedBugId).map((annotation) => annotation.id));
+    const selectedCandidateIds = selectedAnnotationIds.filter((id) => !linkedIds.has(id));
+    const fallbackIds = lastAnnotationIdRef.current && !linkedIds.has(lastAnnotationIdRef.current)
+      ? [lastAnnotationIdRef.current]
+      : annotations.filter((annotation) => !annotation.linkedBugId).slice(-1).map((annotation) => annotation.id);
+    const rawIds = annotationIdsOverride ?? (selectedCandidateIds.length ? selectedCandidateIds : fallbackIds);
+    return [...new Set(rawIds)].filter((id) => !linkedIds.has(id));
+  }
+
   async function saveBug(inputDraft: DraftBug = draft, annotationIdsOverride?: string[]) {
     if (!session || !capture) return;
     if (pendingAnnotationRef.current) await pendingAnnotationRef.current;
-    const annotationIds = annotationIdsOverride ?? (selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id));
+    const annotationIds = annotationIdsForDraft(annotationIdsOverride);
+    const candidateAnnotations = annotations.filter((annotation) => !annotation.linkedBugId);
     const evidenceText = annotations
       .filter((annotation) => annotationIds.includes(annotation.id))
       .map((annotation) => annotation.note.trim())
-      .find(Boolean) || annotations.map((annotation) => annotation.note.trim()).find(Boolean) || '';
+      .find(Boolean) || candidateAnnotations.map((annotation) => annotation.note.trim()).find(Boolean) || '';
     const completedDraft = completeDraft(inputDraft, activeTarget, evidenceText);
     if (!completedDraft.title || !completedDraft.actual || !completedDraft.expected || !completedDraft.severity) {
       setMessage('至少框选一个区域，或写一句口语描述。');
@@ -667,7 +684,9 @@ export function App() {
     setQuickComment(undefined);
     cancelDrawing();
     lastAnnotationIdRef.current = '';
-    setSelectedAnnotationIds([]);
+    const linkedIds = new Set(annotationIds);
+    setAnnotations((current) => current.map((annotation) => linkedIds.has(annotation.id) ? { ...annotation, linkedBugId: body.bug.id, linkedBugTitle: body.bug.title } : annotation));
+    setSelectedAnnotationIds((current) => current.filter((id) => !linkedIds.has(id)));
     await refreshBugs();
   }
 
@@ -746,17 +765,19 @@ export function App() {
 
   async function normalizeBug() {
     if (!session || !capture) return;
-    setBusy('AI 正在整理 Bug');
+    setBusy('AI 正在预填草稿');
     setMessage('');
     try {
+      const annotationIds = annotationIdsForDraft();
+      const candidateAnnotations = annotations.filter((annotation) => !annotation.linkedBugId);
       const body = await api<{ result: any }>('/api/ai/normalize-bug', {
         method: 'POST',
         body: JSON.stringify({
           sessionId: session.id,
           captureId: capture.id,
-          annotationIds: selectedAnnotationIds.length ? selectedAnnotationIds : lastAnnotationIdRef.current ? [lastAnnotationIdRef.current] : annotations.slice(-1).map((annotation) => annotation.id),
+          annotationIds,
           currentDraft: draft,
-          sourceText: bugSourceText(draft, annotations),
+          sourceText: bugSourceText(draft, candidateAnnotations),
           strictness: 'strict',
           assets: draftAssets.map((asset) => ({ label: asset.label, fileName: asset.fileName, mimeType: asset.mimeType, dataUrl: asset.dataUrl }))
         })
@@ -764,12 +785,12 @@ export function App() {
       if (body.result.kind === 'draft') {
         const next = body.result.draft;
         setDraft((current) => mergeAiDraft(current, next));
-        setMessage('AI 已整理到可编辑字段。');
+        setMessage('AI 已预填到可编辑字段。');
       } else {
         const questions = unansweredAiQuestions(draft, body.result.questions ?? []);
         if (!questions.length && body.result.partialDraft) {
           setDraft((current) => mergeAiDraft(current, body.result.partialDraft));
-          setMessage('AI 已根据现有字段整理；没有再追问已填写内容。');
+          setMessage('AI 已根据现有字段预填；没有再追问已填写内容。');
         } else if (!questions.length) {
           setMessage('AI 已识别现有字段；没有需要补充的问题。');
         } else {
@@ -777,7 +798,7 @@ export function App() {
         }
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'AI 整理失败');
+      setMessage(error instanceof Error ? error.message : 'AI 预填失败');
     } finally {
       setBusy('');
     }
@@ -998,7 +1019,13 @@ export function App() {
   const activeTarget = useMemo(() => lastPoint ? (tool === 'section' ? pickSectionTarget(domTargets, lastPoint) ?? pickTarget(domTargets, lastPoint) : pickTarget(domTargets, lastPoint)) : undefined, [domTargets, lastPoint, tool]);
   const activeSessionIds = useMemo(() => new Set(Object.values(deviceSlots).map((slot) => slot?.session.id).filter(Boolean) as string[]), [deviceSlots]);
   const sessionBugs = useMemo(() => bugs.filter((bug) => activeSessionIds.has(bug.sessionId) || bug.sessionId === session?.id), [activeSessionIds, bugs, session?.id]);
-  const commentCount = sessionBugs.length + annotations.length;
+  const candidateAnnotations = useMemo(() => annotations.filter((annotation) => !annotation.linkedBugId), [annotations]);
+  const candidateAnnotationIds = useMemo(() => new Set(candidateAnnotations.map((annotation) => annotation.id)), [candidateAnnotations]);
+  useEffect(() => {
+    setSelectedAnnotationIds((current) => current.filter((id) => candidateAnnotationIds.has(id)));
+    if (lastAnnotationIdRef.current && !candidateAnnotationIds.has(lastAnnotationIdRef.current)) lastAnnotationIdRef.current = '';
+  }, [candidateAnnotationIds]);
+  const commentCount = sessionBugs.length + candidateAnnotations.length;
   const workbenchClass = ['mk-workbench', leftCollapsed ? 'is-left-collapsed' : '', rightCollapsed ? 'is-right-collapsed' : ''].filter(Boolean).join(' ');
   const boardStyle = { '--mk-preview-zoom': String(zoomPercent / 100) } as CSSProperties;
   const visibleDevices = (previewMode === 'dual' ? deviceOrder : [activeDevice]).filter((device) => deviceSlots[device]);
@@ -1040,12 +1067,14 @@ export function App() {
         <section className={workbenchClass} data-testid="workbench">
           <aside className="mk-left-rail" data-collapsed={leftCollapsed}>
             {leftCollapsed ? (
-              <button data-testid="toggle-left-rail" className="mk-collapsed-tab" onClick={() => setLeftCollapsed(false)}><strong>评论</strong><span>{commentCount}</span></button>
+              <button data-testid="toggle-left-rail" className="mk-collapsed-tab" onClick={() => setLeftCollapsed(false)}><strong>索引</strong><span>{commentCount}</span></button>
             ) : (
               <>
                 <div className="mk-rail-block mk-comment-thread">
-                  <h2><span>评论 / 标注</span><button data-testid="toggle-left-rail" aria-label="收起评论" onClick={() => setLeftCollapsed(true)}>‹</button></h2>
-                  {annotations.map((annotation, index) => (
+                  <h2><span>待归类 / Bug</span><button data-testid="toggle-left-rail" aria-label="收起评论" onClick={() => setLeftCollapsed(true)}>‹</button></h2>
+                  <p className="mk-rail-hint mk-thread-purpose">这里是当前页面索引：待归类标注可继续合并成 Bug；保存后会移动到下方 Bug 列表。</p>
+                  {candidateAnnotations.length ? <span className="mk-thread-label">待归类标注</span> : null}
+                  {candidateAnnotations.map((annotation, index) => (
                     <button
                       data-testid="draft-annotation-comment"
                       className={selectedAnnotationIds.includes(annotation.id) ? 'mk-comment-item mk-comment-annotation is-active' : 'mk-comment-item mk-comment-annotation'}
@@ -1053,17 +1082,18 @@ export function App() {
                       onClick={() => { setSelectedAnnotationIds([annotation.id]); setRightCollapsed(false); }}
                     >
                       <strong>#{index + 1} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong>
-                      <span className="mk-comment-time">未保存</span>
-                      <span className="mk-comment-status">标注</span>
+                      <span className="mk-comment-time">待选</span>
+                      <span className="mk-comment-status is-candidate">待归类</span>
                       <p>{annotation.note || '还没有填写标注说明'}</p>
                       <small>{annotation.target?.selector || '截图区域标注'}</small>
                     </button>
                   ))}
+                  {sessionBugs.length ? <span className="mk-thread-label is-bug">已保存 Bug</span> : null}
                   {sessionBugs.map((bug) => (
-                    <button className="mk-comment-item" key={bug.id} onClick={() => { void loadBugDetail(bug.id); setView('bugs'); }}>
+                    <button className="mk-comment-item mk-comment-bug" key={bug.id} onClick={() => { void loadBugDetail(bug.id); setView('bugs'); }}>
                       <strong>{bugSelectorLabel(bug)}</strong>
-                      <span className="mk-comment-time">刚刚</span>
-                      <span className="mk-comment-status">Bug</span>
+                      <span className="mk-comment-time">{bug.status === 'draft' ? '草稿' : statusLabels[bug.status] ?? bug.status}</span>
+                      <span className="mk-comment-status is-bug">Bug</span>
                       <p>{bug.title || '未命名 Bug'}</p>
                       <small>{bug.annotationCount ?? 0} 条标注</small>
                     </button>
@@ -1119,7 +1149,7 @@ export function App() {
               <div className="mk-toolbar-group mk-capture-actions">
                 <button data-testid="capture-viewport" onClick={() => createCapture('viewport')}>截取视口</button>
                 <button data-testid="capture-fullpage" onClick={() => createCapture('fullPage')}>整页截图</button>
-                <button data-testid="undo-annotation" onClick={undoLastAnnotation} disabled={!annotations.length}>撤销标注 <small>Z</small></button>
+                <button data-testid="undo-annotation" onClick={undoLastAnnotation} disabled={!candidateAnnotations.length}>撤销标注 <small>Z</small></button>
                 <button data-testid="scroll-down" onClick={() => runAction('scroll', { delta: { x: 0, y: 520 } })}>向下滚动</button>
               </div>
               <div className="mk-toolbar-group mk-input-actions">
@@ -1142,7 +1172,7 @@ export function App() {
                     tool={tool}
                     domTargets={domTargets}
                     activeTarget={activeTarget}
-                    annotations={annotations}
+                    annotations={candidateAnnotations}
                     selectedAnnotationIds={selectedAnnotationIds}
                     dragStart={dragStart}
                     rectPreview={rectPreview}
@@ -1170,11 +1200,11 @@ export function App() {
           </section>
           <aside className="mk-right-panel" data-collapsed={rightCollapsed}>
             {rightCollapsed ? (
-              <button data-testid="toggle-right-panel" className="mk-collapsed-tab" onClick={() => setRightCollapsed(false)}><strong>检查</strong><span>{annotations.length}</span></button>
+              <button data-testid="toggle-right-panel" className="mk-collapsed-tab" onClick={() => setRightCollapsed(false)}><strong>检查</strong><span>{candidateAnnotations.length}</span></button>
             ) : (
               <>
                 <div className="mk-panel-toolbar"><strong>检查器</strong><button data-testid="toggle-right-panel" aria-label="收起检查器" onClick={() => setRightCollapsed(true)}>›</button></div>
-                <BugPanel draft={draft} setDraft={setDraft} draftAssets={draftAssets} addDraftAssetFiles={addDraftAssetFiles} removeDraftAsset={removeDraftAsset} annotations={annotations} selectedAnnotationIds={selectedAnnotationIds} setSelectedAnnotationIds={setSelectedAnnotationIds} saveBug={() => saveBug()} normalizeBug={normalizeBug} aiStatus={aiStatus} activeTarget={activeTarget} lastPoint={lastPoint} session={session} capture={capture} updateAnnotation={updateAnnotation} deleteAnnotation={deleteAnnotation} />
+                <BugPanel draft={draft} setDraft={setDraft} draftAssets={draftAssets} addDraftAssetFiles={addDraftAssetFiles} removeDraftAsset={removeDraftAsset} annotations={candidateAnnotations} selectedAnnotationIds={selectedAnnotationIds} setSelectedAnnotationIds={setSelectedAnnotationIds} saveBug={() => saveBug()} normalizeBug={normalizeBug} aiStatus={aiStatus} activeTarget={activeTarget} lastPoint={lastPoint} session={session} capture={capture} updateAnnotation={updateAnnotation} deleteAnnotation={deleteAnnotation} />
               </>
             )}
           </aside>
@@ -1401,7 +1431,7 @@ function QuickCommentPopover(props: { comment: QuickComment; imageSize: { width:
         <button onClick={() => props.onSave()} disabled={!props.comment.text.trim()}>保存评论</button>
         <button className="primary" data-testid="quick-comment-save-bug" onClick={() => props.onSaveBug()} disabled={!props.comment.text.trim()}>保存为 Bug</button>
       </div>
-      <small className="mk-quick-comment-tip">保存评论只保留标注；保存为 Bug 会把这条标注提交成一个 Bug。点 × 会取消当前框选。</small>
+      <small className="mk-quick-comment-tip">保存评论会进入待归类候选；保存为 Bug 会立刻提交并从候选区移除。点 × 会取消当前框选。</small>
     </div>,
     document.body
   );
@@ -1726,15 +1756,15 @@ function BugPanel(props: {
   const selectedCount = props.selectedAnnotationIds.length;
   const selectionHint = props.annotations.length
     ? selectedCount
-      ? `已选 ${selectedCount} 条；点击“保存为一个 Bug”会把它们绑定成同一个 Bug 的证据。`
-      : '未勾选时会默认绑定最后一条标注；可勾选多条合并到同一个 Bug。'
-    : '先点击“开始标注”，框选后这里会出现截图区域。';
+      ? `已选 ${selectedCount} 条；保存后会从候选区移出，进入 Bug 列表。`
+      : '未勾选时默认使用最后一条待归类标注；可勾选多条合并成一个 Bug。'
+    : '暂无待归类标注；保存成 Bug 的标注会自动移出候选区。';
   return (
     <div className="mk-bug-panel">
       <ProjectContextCard snapshot={props.session.projectSnapshot} fallbackHost={safeHost(props.session.currentUrl || props.session.sourceUrl)} />
       <section className="mk-panel-section mk-ann-list">
         <div className="mk-ann-list-head">
-          <h3>本次标注</h3>
+          <h3>待归类标注</h3>
           <small>{selectionHint}</small>
         </div>
         {props.annotations.map((annotation, index) => (
@@ -1755,22 +1785,27 @@ function BugPanel(props: {
             </div>
           </article>
         ))}
-        {props.annotations.length === 0 ? <p className="mk-empty">还没有标注。</p> : null}
+        {props.annotations.length === 0 ? <p className="mk-empty">没有待归类标注。框选后可先写评论；保存为 Bug 后这里会自动清空对应证据。</p> : null}
       </section>
       <section className="mk-panel-section mk-draft-card">
         <h2>Bug 草稿</h2>
-        <small className="mk-draft-hint">在这里写统一描述；上面勾选的标注会作为同一个 Bug 的截图证据。</small>
-        <div className="mk-quick-group" data-testid="bug-type-chips">
-          {bugTypeOptions.map((item) => <button type="button" key={item.value} className={props.draft.bugType === item.value ? 'is-active' : ''} onClick={() => update('bugType', item.value)}>{item.label}</button>)}
-        </div>
-        <label>标题<input data-testid="bug-title" value={props.draft.title} onChange={(event) => update('title', event.currentTarget.value)} /></label>
+        <small className="mk-draft-hint">先写一句口语描述即可；AI 预填是可选的，不会自动拖慢框选流程。新建状态固定为草稿。</small>
+        <label className="mk-primary-draft-input">一句话描述<textarea data-testid="bug-comment" value={props.draft.comment} onChange={(event) => update('comment', event.currentTarget.value)} placeholder="例如：Mobile 下拉最后一行被截断；右上角按钮点了没反应" /></label>
         <div className="mk-two-col">
           <label>优先级<select data-testid="bug-severity" value={props.draft.severity} onChange={(event) => update('severity', event.currentTarget.value)}><option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></label>
-          <label>状态<select data-testid="bug-status" value={props.draft.status} onChange={(event) => update('status', event.currentTarget.value)}>{statusOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+          <div className="mk-status-readonly"><span>状态</span><strong>{statusLabels[props.draft.status] ?? '草稿'}</strong><small>新建后在 Bug 详情里再流转</small></div>
         </div>
-        <label>实际表现<textarea data-testid="bug-actual" value={props.draft.actual} onChange={(event) => update('actual', event.currentTarget.value)} /></label>
-        <label>期望表现<textarea data-testid="bug-expected" value={props.draft.expected} onChange={(event) => update('expected', event.currentTarget.value)} /></label>
-        <label>口语描述<textarea data-testid="bug-comment" value={props.draft.comment} onChange={(event) => update('comment', event.currentTarget.value)} placeholder="少填版：这里只要写一句问题，比如“Mobile 下拉最后一行被截断”" /></label>
+        <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>AI 预填草稿（可选）{props.aiStatus.enabled ? ` · ${props.aiStatus.provider}${props.aiStatus.supportsImages ? '+图片' : ''}` : ''}</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>保存为一个 Bug</button></div>
+        {!props.aiStatus.enabled ? <small className="mk-draft-hint">{props.aiStatus.reason}</small> : null}
+        <details className="mk-reference-fields mk-advanced-fields" data-testid="bug-advanced-fields">
+          <summary>高级字段 / 手动微调（可选）</summary>
+          <div className="mk-quick-group" data-testid="bug-type-chips">
+            {bugTypeOptions.map((item) => <button type="button" key={item.value} className={props.draft.bugType === item.value ? 'is-active' : ''} onClick={() => update('bugType', item.value)}>{item.label}</button>)}
+          </div>
+          <label>标题<input data-testid="bug-title" value={props.draft.title} onChange={(event) => update('title', event.currentTarget.value)} /></label>
+          <label>实际表现<textarea data-testid="bug-actual" value={props.draft.actual} onChange={(event) => update('actual', event.currentTarget.value)} /></label>
+          <label>期望表现<textarea data-testid="bug-expected" value={props.draft.expected} onChange={(event) => update('expected', event.currentTarget.value)} /></label>
+        </details>
         <details className="mk-reference-fields">
           <summary>引用 / 对比（可选）</summary>
           <label>原始需求链接<input data-testid="requirement-url" type="url" value={props.draft.requirementUrl} onChange={(event) => update('requirementUrl', event.currentTarget.value)} placeholder="飞书需求 / PRD / issue URL" /></label>
@@ -1792,9 +1827,7 @@ function BugPanel(props: {
           ) : null}
         </section>
         <ProjectSaveNote snapshot={props.session.projectSnapshot} fallbackHost={safeHost(props.session.currentUrl || props.session.sourceUrl)} />
-        <div className="mk-button-pair"><button data-testid="normalize-bug" onClick={props.normalizeBug} disabled={!props.aiStatus.enabled}>AI 整理 Bug（{props.aiStatus.provider}{props.aiStatus.supportsImages ? '+图片' : ''}）</button><button data-testid="save-bug" onClick={props.saveBug} disabled={!canSave}>保存为一个 Bug</button></div>
         <small>快捷：1/2/3/4 设 P0/P1/P2/P3，A 快速保存，Z 撤销标注，O 圈选，D 自由画；画布滚轮会滚动真实页面。</small>
-        {!props.aiStatus.enabled ? <small>{props.aiStatus.reason}</small> : null}
       </section>
       <details className="mk-panel-section mk-target-card">
         <summary>点击识别</summary>
@@ -2221,7 +2254,7 @@ function BugDetailPanel({ detail, issueState, patchBug, exportBug, deleteBug }: 
 }
 
 function Settings({ aiStatus }: { aiStatus: AiStatus }) {
-  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}{aiStatus.supportsImages ? '，支持图片输入' : ''}{aiStatus.configSource ? `，来源 ${aiStatus.configSource}` : ''}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型；仅在开启 MMF / multimodal provider 并点击 AI 整理 Bug 时发送对比截图。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / Z 撤销标注 / 1-4 优先级 / Cmd+S 保存 / Cmd+V 粘贴截图</dd></dl></section>;
+  return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}{aiStatus.supportsImages ? '，支持图片输入' : ''}{aiStatus.configSource ? `，来源 ${aiStatus.configSource}` : ''}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型；仅在开启 MMF / multimodal provider 并点击 AI 预填草稿时发送对比截图。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / Z 撤销标注 / 1-4 优先级 / Cmd+S 保存 / Cmd+V 粘贴截图</dd></dl></section>;
 }
 
 function AnnotationShape({ annotation, selected, index }: { annotation: Annotation; selected: boolean; index: number }) {

@@ -97,7 +97,7 @@ MARKIT_CATALOG_ROOT=/Users/xin/ptc-wiki MARKIT_AI_PROVIDER=mock pnpm dev
 MARKIT_AI_PROVIDER=mock pnpm dev
 ```
 
-OpenAI-compatible provider 预留环境变量；截图/对比图走多模态时加 `MARKIT_MODEL_MULTIMODAL=true`。仅在点击“整理描述”时会把草稿截图按 OpenAI-compatible `image_url` parts 发送给 provider：
+OpenAI-compatible provider 预留环境变量；截图/对比图走多模态时加 `MARKIT_MODEL_MULTIMODAL=true`。仅在点击“AI 预填草稿”时会把草稿截图按 OpenAI-compatible `image_url` parts 发送给 provider：
 
 ```bash
 MARKIT_AI_PROVIDER=openai-compatible

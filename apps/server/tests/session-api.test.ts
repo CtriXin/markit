@@ -147,6 +147,11 @@ describe('session and capture API', () => {
     expect(bugBody.bug.projectSnapshot).toMatchObject({ project: { id: 'ptc-demo', name: 'Demo Project' }, domain: { host: 'demo.example.com', activeBranch: 'release-1.2.3' } });
     expect(bugBody.assets).toHaveLength(1);
     expect(bugBody.bug.assetCount).toBe(1);
+    const linkedAnnotationBody = await fetch(`${apiBaseUrl}/api/captures/${body.capture.id}/annotations`).then((item) => item.json());
+    expect(linkedAnnotationBody.annotations.find((annotation: { id: string }) => annotation.id === annotationBody.annotation.id)).toMatchObject({
+      linkedBugId: bugBody.bug.id,
+      linkedBugTitle: '粘贴截图证据'
+    });
     const bugsWithProject = await fetch(`${apiBaseUrl}/api/bugs`).then((item) => item.json());
     expect(bugsWithProject.bugs.find((bug: { id: string }) => bug.id === bugBody.bug.id)?.projectSnapshot).toMatchObject({ project: { id: 'ptc-demo' } });
     const assetResponse = await fetch(`${apiBaseUrl}/api/bug-assets/${bugBody.assets[0].id}/image`);

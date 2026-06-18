@@ -160,10 +160,10 @@ async function createBugFromTarget(page, bug, tool, testId) {
   await page.waitForFunction((count) => document.querySelectorAll('.mk-ann-list article').length > count, beforeCount);
   await page.waitForFunction(() => document.querySelector('[data-testid="normalize-bug"]') && !document.querySelector('[data-testid="normalize-bug"]').disabled);
   await page.getByTestId('normalize-bug').click();
-  await page.waitForFunction(() => document.body.innerText.includes('AI 已整理到可编辑字段。'));
+  await page.waitForFunction(() => document.body.innerText.includes('AI 已预填到可编辑字段。'));
+  await page.getByTestId('bug-advanced-fields').evaluate((element) => { element.open = true; });
   await page.getByTestId('bug-title').fill(bug.title);
   await page.getByTestId('bug-severity').selectOption(bug.severity);
-  await page.getByTestId('bug-status').selectOption('open');
   await page.getByTestId('bug-actual').fill(bug.actual);
   await page.getByTestId('bug-expected').fill(bug.expected);
   await page.getByTestId('save-bug').click();

@@ -1,6 +1,20 @@
 import type { Row } from './helpers.js';
 import { parseJson } from './helpers.js';
 
+type MappedAnnotation = {
+  id: string;
+  captureId: string;
+  kind: string;
+  geometry: unknown;
+  target: unknown;
+  note: string;
+  colorRole: string;
+  createdAt: string;
+  updatedAt: string;
+  linkedBugId?: string;
+  linkedBugTitle?: string;
+};
+
 export function mapSession(row: Row) {
   return {
     id: String(row.id),
@@ -34,8 +48,8 @@ export function mapCapture(row: Row) {
   };
 }
 
-export function mapAnnotation(row: Row) {
-  return {
+export function mapAnnotation(row: Row): MappedAnnotation {
+  const annotation: MappedAnnotation = {
     id: String(row.id),
     captureId: String(row.capture_id),
     kind: String(row.kind),
@@ -46,6 +60,11 @@ export function mapAnnotation(row: Row) {
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at)
   };
+  if (row.linked_bug_id) {
+    annotation.linkedBugId = String(row.linked_bug_id);
+    if (row.linked_bug_title) annotation.linkedBugTitle = String(row.linked_bug_title);
+  }
+  return annotation;
 }
 
 export function mapBug(row: Row) {
