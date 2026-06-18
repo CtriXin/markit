@@ -70,6 +70,7 @@ API：
 - 批量提交请求里的 `assignees: ["songxin", "qauser"]` 优先，可在 Bug 列表工具栏临时输入，支持多人。
 - 其次使用 catalog / `projectSnapshot.project.defaultAssignees[]`，兼容旧的 `defaultAssignee`。
 - 都没有时，真实提交会读取当前 GitLab 登录用户并默认 assign 给自己。
+- 如果 catalog 里的默认负责人全部无法解析，新建 Work Item 不写 `assignee_ids`，body 会记录 `Applied Assignees: none` 和 `unresolvedAssignees` 线索。
 - 手动 `assignees[]` 会同步已挂载 Work Item 的负责人；如果部分 username 无法解析，本地结果只展示已实际应用的负责人，并记录 `unresolvedAssignees[]`。
 - 如果手动负责人全部无法解析，已挂载 Work Item 会保留原远端负责人并追加 unresolved warning；新建 Work Item 会记录 `Applied Assignees: none`；后续成功解析时会自动清理旧 warning。
 - 后续如果接 service / 绑定关系，只要把查询结果转成同一个 `assignees[]` 即可，不需要改 GitLab submit 主流程。
