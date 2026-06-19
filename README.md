@@ -23,6 +23,10 @@ pnpm dev
 - Web: `http://127.0.0.1:5173`
 - 本地数据：`.markit/`
 
+## Handoff
+
+- 当前长期交接与功能总览：`docs/markit-current-handoff.md`
+
 ## Current scope
 
 已实现 v1 本地完整闭环：
