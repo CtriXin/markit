@@ -375,7 +375,7 @@ export function App() {
     setCaptures(body.captures);
     setDeviceSlots((current) => {
       const slot = current[device];
-      if (!slot || slot.session.id !== sessionId) return current;
+      if (!slot || slot.session?.id !== sessionId) return current;
       return { ...current, [device]: { ...slot, captures: body.captures } };
     });
   }
@@ -465,7 +465,7 @@ export function App() {
       setCaptures(captureBody.captures);
       setDeviceSlots((current) => {
         const slot = current[device];
-        if (!slot || slot.session.id !== sessionId) return current;
+        if (!slot || slot.session?.id !== sessionId) return current;
         return { ...current, [device]: { session: body.session, capture: body.capture ?? slot.capture, captures: captureBody.captures } };
       });
     } catch (error) {
@@ -488,7 +488,7 @@ export function App() {
       setCaptures(captureBody.captures);
       setDeviceSlots((current) => {
         const slot = current[device];
-        if (!slot || slot.session.id !== sessionId) return current;
+        if (!slot || slot.session?.id !== sessionId) return current;
         return { ...current, [device]: { ...slot, capture: body.capture, captures: captureBody.captures } };
       });
       return true;
@@ -541,7 +541,7 @@ export function App() {
   async function navigateAddress(scope: 'active' | 'all') {
     const targetUrl = addressText.trim();
     if (!targetUrl) return;
-    const devices = (scope === 'all' ? (previewMode === 'dual' ? deviceOrder : [activeDevice]) : [activeDevice]).filter((device) => deviceSlots[device]?.session.id);
+    const devices = (scope === 'all' ? (previewMode === 'dual' ? deviceOrder : [activeDevice]) : [activeDevice]).filter((device) => deviceSlots[device]?.session?.id);
     if (!devices.length) return;
     setBusy(scope === 'all' ? '正在双端打开真实地址' : `正在打开${deviceLabels[activeDevice].title}`);
     setMessage('');
@@ -1033,7 +1033,7 @@ export function App() {
   }
 
   const activeTarget = useMemo(() => lastPoint ? (tool === 'section' ? pickSectionTarget(domTargets, lastPoint) ?? pickTarget(domTargets, lastPoint) : pickTarget(domTargets, lastPoint)) : undefined, [domTargets, lastPoint, tool]);
-  const activeSessionIds = useMemo(() => new Set(Object.values(deviceSlots).map((slot) => slot?.session.id).filter(Boolean) as string[]), [deviceSlots]);
+  const activeSessionIds = useMemo(() => new Set(Object.values(deviceSlots).filter(Boolean).map((slot) => slot.session?.id).filter(Boolean) as string[]), [deviceSlots]);
   const sessionBugs = useMemo(() => bugs.filter((bug) => activeSessionIds.has(bug.sessionId) || bug.sessionId === session?.id), [activeSessionIds, bugs, session?.id]);
   const candidateAnnotations = useMemo(() => annotations.filter((annotation) => !annotation.linkedBugId), [annotations]);
   const candidateAnnotationIds = useMemo(() => new Set(candidateAnnotations.map((annotation) => annotation.id)), [candidateAnnotations]);
@@ -1193,7 +1193,7 @@ export function App() {
                     dragStart={dragStart}
                     rectPreview={rectPreview}
                     freehand={freehand}
-                    sessionId={deviceSlots[device]?.session.id}
+                    sessionId={deviceSlots[device]?.session?.id}
                     quickComment={quickComment?.captureId === deviceSlots[device]?.capture?.id ? quickComment : undefined}
                     setQuickComment={setQuickComment}
                     onCloseQuickComment={cancelQuickCommentAnnotation}

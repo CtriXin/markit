@@ -1,7 +1,7 @@
 import { access, readdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
-export const DEFAULT_CATALOG_ROOT = '/Users/xin/ptc-wiki';
+export const DEFAULT_CATALOG_ROOT = '';
 
 export type CatalogOptions = {
   root?: string;
@@ -312,8 +312,8 @@ export function projectSnapshotFromCatalog(input: {
 
 function resolveCatalogRoot(options: CatalogOptions): string {
   const env = options.env ?? process.env;
-  const configured = firstNonEmpty(options.root, env.MARKIT_CATALOG_ROOT, DEFAULT_CATALOG_ROOT);
-  return resolve(configured);
+  const root = options.root ?? env.MARKIT_CATALOG_ROOT ?? DEFAULT_CATALOG_ROOT;
+  return root ? resolve(root) : '';
 }
 
 function disabledCatalog(root: string, reason: string): LoadedCatalog {
@@ -555,5 +555,5 @@ async function readJson<T>(path: string): Promise<T> {
 }
 
 function firstNonEmpty(...values: Array<string | undefined>): string {
-  return values.find((value) => value?.trim()) ?? DEFAULT_CATALOG_ROOT;
+  return values.find((value) => value?.trim()) ?? '';
 }
