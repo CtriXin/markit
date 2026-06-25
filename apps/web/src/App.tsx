@@ -27,8 +27,9 @@ type IssueUiState = { status: 'submitting' | 'submitted' | 'reused' | 'synced' |
 type IssueFilter = 'pending' | 'linked' | 'all';
 type AiStatus = { enabled: boolean; provider: string; supportsImages?: boolean; configSource?: string; reason?: string };
 type AiFollowup = { id: string; question: string; field: keyof DraftBug; label: string; placeholder: string };
-type CatalogStatus = { schema: 'markit.catalog.status.v1'; enabled: boolean; root: string; reason?: string; generatedAt?: string; projectCount?: number; domainCount?: number; source?: { pendingAssociations?: number }; integration?: { syncPolicy?: string } };
-type CatalogProject = { id: string; name: string; status: string; aliases: string[]; domainCount: number; activeDomainCount: number; pendingDomainCount: number; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; defaultAssignees?: string[]; labels?: string[]; testing?: { enabled: boolean; defaultViewport: string; viewports: string[] }; confidence?: number };
+type CatalogSyncStatus = { enabled: boolean; status: 'synced' | 'skipped' | 'failed'; reason?: string; commitBefore?: string; commitAfter?: string; branch?: string; remote?: string; cached?: boolean; ttlMs?: number };
+type CatalogStatus = { schema: 'markit.catalog.status.v1'; enabled: boolean; root: string; reason?: string; generatedAt?: string; projectCount?: number; domainCount?: number; source?: { pendingAssociations?: number }; integration?: { syncPolicy?: string }; sync?: CatalogSyncStatus };
+type CatalogProject = { id: string; name: string; status: string; aliases: string[]; domainCount: number; activeDomainCount: number; pendingDomainCount: number; scmpService?: string; gitlabPath?: string; localFolderHint?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; defaultAssignees?: string[]; labels?: string[]; testing?: { enabled: boolean; defaultViewport: string; viewports: string[] }; confidence?: number };
 type CatalogDomain = { host: string; url: string; projectId: string; projectName: string; env: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; defaultAssignee?: string; defaultAssignees?: string[]; confidence?: number };
 type CatalogResolveResult = { status: CatalogStatus; input: string; hostname?: string; matched: boolean; matchedHost?: string; reason?: string; domain?: CatalogDomain; project?: CatalogProject };
 type ComboOption = { value: string; label: string; meta?: string; badge?: string; searchText: string };
@@ -38,7 +39,7 @@ type ProjectSnapshot = {
   capturedAt: string;
   catalogRoot?: string;
   catalogGeneratedAt?: string;
-  project: { id: string; name: string; status: string; scmpService?: string; gitlabPath?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; defaultAssignees?: string[]; labels?: string[]; confidence?: number };
+  project: { id: string; name: string; status: string; scmpService?: string; gitlabPath?: string; localFolderHint?: string; activeBranch?: string; issueProjectPath?: string; defaultAssignee?: string; defaultAssignees?: string[]; labels?: string[]; confidence?: number };
   domain?: { host: string; url: string; env: string; status: string; activeBranch?: string; matchedHost?: string; defaultAssignee?: string; defaultAssignees?: string[] };
 };
 type Session = { id: string; sourceUrl: string; currentUrl: string; title: string; viewport: Viewport; projectSnapshot?: ProjectSnapshot; sessionVersion: number; createdAt?: string };
@@ -750,7 +751,7 @@ export function App() {
       if (signal) init.signal = signal;
       const body = await api<IssueSubmitResponse>('/api/bugs/issue-submit', init);
       const firstUrl = body.submissions[0]?.workItemUrl ?? body.submissions[0]?.webUrl ?? body.submitPath;
-      setMessage(`已真实创建 ${body.createdCount ?? body.count} 个 ptc-wiki GitLab Issue：${firstUrl}`);
+      setMessage(`已上报 ${body.createdCount ?? body.count} 个 ptc-wiki GitLab Issue：${firstUrl}`);
       await refreshBugs();
       if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
       return body;
@@ -759,7 +760,7 @@ export function App() {
         setMessage('已停止等待 GitLab 挂载结果；如果后台已经开始提交，刷新后会回填状态。');
         throw error;
       }
-      setMessage(`真实挂 Issue 失败：${error instanceof Error ? error.message : String(error)}`);
+      setMessage(`上报失败：${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
   }
@@ -1573,6 +1574,7 @@ function ProjectCatalogPicker(props: {
       project.name,
       project.scmpService,
       project.gitlabPath,
+      project.localFolderHint,
       project.activeBranch,
       project.issueProjectPath,
       ...(project.aliases ?? [])
@@ -1593,7 +1595,7 @@ function ProjectCatalogPicker(props: {
           <strong>Project Catalog</strong>
           <span>{props.projects.length} 个可测试项目 / {props.status.domainCount ?? 0} 个域名；选择后会填入 URL。</span>
         </div>
-        <em>{props.status.source?.pendingAssociations ? `${props.status.source.pendingAssociations} 条 pending 关联` : 'catalog ready'}</em>
+        <em>{catalogSyncSummary(props.status)}</em>
       </div>
       <div className="mk-catalog-controls">
         <SearchableSelect
@@ -1623,6 +1625,7 @@ function ProjectCatalogPicker(props: {
       {selectedProject ? (
         <div className="mk-catalog-meta">
           <span>{selectedProject.gitlabPath ?? '未记录 repo'}</span>
+          <span>{selectedProject.localFolderHint ? `folder ${selectedProject.localFolderHint}` : '未记录 folder'}</span>
           <span>{selectedProject.activeBranch ? `branch ${selectedProject.activeBranch}` : '未记录 branch'}</span>
           <span>{selectedDomain ? `${catalogStatusText(selectedDomain.status)} / ${selectedDomain.env}` : `${selectedProject.domainCount} 个域名`}</span>
         </div>
@@ -2191,7 +2194,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
   const selectedForIssueSubmit = selectedForAction.filter((bugId) => !issueUiHasSubmission(issueUiByBugId[bugId]) && issueUiByBugId[bugId]?.status !== 'submitting' && !props.bugs.find((bug) => bug.id === bugId)?.issueSubmission);
   const actionRunning = bulkAction.status === 'running';
   const submitIds = bulkAssignees.length ? selectedForAction : selectedForIssueSubmit;
-  const issueSubmitLabel = actionRunning ? '处理中...' : bulkAssignees.length ? '同步负责人 / 挂 Issue' : selectedForAction.length && !selectedForIssueSubmit.length ? '查看已有 Issue' : '真实挂 Wiki Issue';
+  const issueSubmitLabel = actionRunning ? '上报中...' : '上报';
   const assigneeHint = bulkAssignees.length ? `负责人：${bulkAssignees.join(', ')}` : '负责人：按项目绑定；没有绑定时默认当前 GitLab 用户';
   const rememberBulkAssignees = () => {
     if (!bulkAssignees.length) return;
@@ -2236,10 +2239,10 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
     submitAbortRef.current = controller;
     setIssueUiByBugId((current) => {
       const next = { ...current };
-      for (const bugId of submitIds) next[bugId] = { status: 'submitting', text: bulkAssignees.length ? '正在同步负责人 / 挂 Issue...' : '正在提交到 Wiki Issue...' };
+      for (const bugId of submitIds) next[bugId] = { status: 'submitting', text: bulkAssignees.length ? '正在同步负责人 / 上报...' : '正在上报...' };
       return next;
     });
-    setBulkAction({ status: 'running', action: 'submit', text: `正在同步 ${submitIds.length} 个 Wiki Issue...`, detail: `状态：loading；${assigneeHint}；${bulkAssignees.length ? '已挂载 Bug 会同步负责人，不会重复创建。' : `已跳过 ${selectedForAction.length - selectedForIssueSubmit.length} 个已挂载 Bug。`}步骤：导出 evidence -> 上传截图资源 -> 创建/同步 Work Item` });
+    setBulkAction({ status: 'running', action: 'submit', text: `正在上报 ${submitIds.length} 个 Bug...`, detail: `状态：loading；${assigneeHint}；${bulkAssignees.length ? '已挂载 Bug 会同步负责人，不会重复创建。' : `已跳过 ${selectedForAction.length - selectedForIssueSubmit.length} 个已挂载 Bug。`}步骤：导出 evidence -> 上传截图资源 -> 创建/同步 Work Item` });
     try {
       const result = await props.submitGitLabIssues(submitIds, controller.signal, bulkAssignees);
       const created = result.createdCount ?? result.count;
@@ -2343,7 +2346,6 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
               <small className="mk-assignee-help">这里填人，不填则用项目绑定负责人；再没有就用当前 GitLab 用户。</small>
             </label>
             <button data-testid="bulk-export" disabled={!selectedForAction.length || actionRunning} onClick={() => void runBulkExport()}>批量导出</button>
-            <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueDraft()}>挂到 Wiki Issue 草稿</button>
             <button data-testid="bulk-issue-submit" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueSubmit()}>{issueSubmitLabel}</button>
             {bulkAction.status !== 'idle' ? (
               <div className={`mk-bulk-status is-${bulkAction.status}`} data-testid="bulk-action-status" role="status" aria-live="polite">
@@ -2753,6 +2755,20 @@ function catalogStatusText(value: string): string {
   return ({ active: '已验证', pending: '待确认', archived: '已归档', unknown: '未知' } as Record<string, string>)[value] ?? value;
 }
 
+function catalogSyncSummary(status: CatalogStatus): string {
+  if (status.source?.pendingAssociations) return `${status.source.pendingAssociations} 条 pending 关联`;
+  const sync = status.sync;
+  if (!sync) return 'catalog ready';
+  if (sync.status === 'synced') {
+    const commit = sync.commitAfter ? ` ${sync.commitAfter.slice(0, 7)}` : '';
+    return sync.cached ? `catalog cached${commit}` : `catalog synced${commit}`;
+  }
+  if (sync.status === 'failed') return `catalog sync failed: ${sync.reason ?? 'unknown'}`;
+  if (sync.reason === 'not_git_worktree') return 'catalog local';
+  if (sync.reason === 'sync_disabled') return 'catalog sync off';
+  return 'catalog ready';
+}
+
 function projectBranchLabel(snapshot: ProjectSnapshot | undefined): string {
   return snapshot?.domain?.activeBranch || snapshot?.project.activeBranch || '未记录';
 }
@@ -2797,6 +2813,7 @@ function snapshotFromCatalog(status: CatalogStatus, project: CatalogProject, dom
   if (status.generatedAt) snapshot.catalogGeneratedAt = status.generatedAt;
   if (project.scmpService) snapshot.project.scmpService = project.scmpService;
   if (project.gitlabPath) snapshot.project.gitlabPath = project.gitlabPath;
+  if (project.localFolderHint) snapshot.project.localFolderHint = project.localFolderHint;
   if (project.activeBranch) snapshot.project.activeBranch = project.activeBranch;
   if (project.issueProjectPath) snapshot.project.issueProjectPath = project.issueProjectPath;
   if (project.defaultAssignee) snapshot.project.defaultAssignee = project.defaultAssignee;

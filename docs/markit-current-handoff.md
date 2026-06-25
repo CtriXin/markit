@@ -228,8 +228,8 @@ MARKIT_FEISHU_CLI_AS=user
 现状：
 
 - 支持批量选择 Bug。
-- 支持 dry-run `挂到 Wiki Issue 草稿`。
-- 支持真实 `挂 Wiki Issue`，提交到 GitLab Hub `ptc/fe/ptc-wiki`。
+- 工作台只暴露一个 `上报` 按钮，提交到 GitLab Hub `ptc/fe/ptc-wiki`。
+- 后端仍保留 dry-run issue draft 接口供 agent/debug 使用，不作为测试/设计主流程按钮展示。
 - 一个 Markit Bug 默认对应一个 GitLab Work Item / Issue。
 - 提交时会上传 annotated screenshot、crop、对比截图到 GitLab uploads，并把返回 Markdown 写入 issue body。
 - GitLab issue body 包含 `markit.gitlab-issue.v1` 隐藏 metadata，labels 包含 `project:*`、`service:*`、`repo:*`、`domain:*`、`type:*`。
@@ -284,6 +284,12 @@ MARKIT_FEISHU_CLI_AS=user
 - `catalog/domains.json`
 - `catalog/projects/*.json`
 
+当前 truth 边界：
+
+- 线上 Markit 只读 `ptc-wiki` git catalog，不运行时双读本机 `project-wiki`。
+- 本地 AI 可以从 `project-wiki`、`issue-tracking`、`scmp-ops`、source docs 发现 `需求名 / repo / folder / service / domain`，但共享记录要写回并 push 到 `ptc-wiki`。
+- `MARKIT_CATALOG_SYNC=1` 时，server 在读取 catalog 前按 TTL 执行 `git pull --ff-only`；失败不阻塞 Markit，`/api/catalog/status.sync` 会暴露 `synced` / `skipped` / `failed`。
+
 当前 API：
 
 - `GET /api/catalog/status`
@@ -296,8 +302,9 @@ MARKIT_FEISHU_CLI_AS=user
 - 项目/域名选择。
 - URL 反查项目绑定。
 - session `projectSnapshot` 持久化。
-- Bug export 带项目/域名/branch。
-- GitLab issue body 带业务 repo / branch / binding status / assignee suggestion / SCMP service / hidden metadata。
+- Bug export 带项目/域名/repo/folder hint/branch。
+- GitLab issue body 带业务 repo / folder hint / branch / binding status / assignee suggestion / SCMP service / hidden metadata。
+- Feishu Base 备注带 `Local Folder Hint`，方便修复 agent 从 bug 表关联 issue 后定位本地 repo/folder。
 - GitLab labels 带 `project:*`、`service:*`、`repo:*`、`domain:*`、`type:*`，避免域名绑定多个项目时 agent 误判。
 - 无项目绑定的 Bug 也能进入 Hub，并标记 `Binding Status: unbound` 和 `unbound-project` label。
 
@@ -415,7 +422,8 @@ comment = bug title
 
 ### GitLab Submit
 
-- 完成 dry-run issue draft。
+- 完成单按钮 `上报` 主流程。
+- 保留 dry-run issue draft 后端接口供 debug。
 - 完成真实 GitLab Work Item submit。
 - 完成 GitLab uploads 截图证据。
 - 完成 GitLab body hidden metadata 和 project/service/repo/domain/type labels。
@@ -485,7 +493,7 @@ pnpm probe:pixels
 
 ### Project Catalog
 
-- `ptc-wiki` schema 还没有完全承载 folder / repo / 需求 / 项目名 / branch / domain / 发布状态的完整 lifecycle。
+- `ptc-wiki` schema 已有 `repo.localFolderHint`，Markit 已读取并冻结到 session/issue；但不是所有项目都已补齐这个字段。
 - 还没有服务端 UI 来编辑 catalog。
 - 还没有和 CI / 发布记录自动同步 branch、发布时间、commit。
 - 还没有多环境 domain 分组。
@@ -669,7 +677,7 @@ GitLab submit 人工验收：
 4. 保存为 Bug。
 5. 在 Bug list 勾选该 Bug。
 6. 负责人使用默认 `songxin` 或输入 GitLab username。
-7. 点击真实挂 Wiki Issue。
+7. 点击 `上报`。
 8. 验证卡片进入 `已挂`，显示 issue link。
 9. 打开 GitLab Work Item，验证 body 包含截图资源、项目、域名、branch、assignee 信息。
 10. 验证 GitLab body 包含 `markit.gitlab-issue.v1` metadata 和 `SCMP Service`；labels 包含 `project:*`、`service:*`、`repo:*`、`domain:*`、`type:*`。

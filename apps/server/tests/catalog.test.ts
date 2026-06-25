@@ -40,7 +40,7 @@ describe('project catalog API', () => {
 
   it('exposes catalog status, searchable projects, project domains, and URL resolution', async () => {
     const status = await fetch(`${baseUrl}/api/catalog/status`).then((response) => response.json());
-    expect(status).toMatchObject({ enabled: true, projectCount: 2, domainCount: 1 });
+    expect(status).toMatchObject({ enabled: true, projectCount: 2, domainCount: 1, sync: { status: 'skipped', reason: 'not_git_worktree' } });
 
     const projects = await fetch(`${baseUrl}/api/catalog/projects?query=demo`).then((response) => response.json());
     expect(projects.projects).toHaveLength(1);
@@ -48,6 +48,7 @@ describe('project catalog API', () => {
       id: 'demo-project',
       name: 'Demo Project',
       scmpService: 'ptc-demo',
+      localFolderHint: 'ptc-demo-folder',
       activeBranch: 'release-1.2.3',
       domainCount: 1
     });
@@ -63,7 +64,7 @@ describe('project catalog API', () => {
       matched: true,
       hostname: 'demo.example.com',
       matchedHost: 'demo.example.com',
-      project: { id: 'demo-project', name: 'Demo Project' },
+      project: { id: 'demo-project', name: 'Demo Project', localFolderHint: 'ptc-demo-folder' },
       domain: { host: 'demo.example.com', env: 'prod', defaultAssignee: 'domain-owner', defaultAssignees: ['domain-owner'] }
     });
   });
@@ -130,7 +131,7 @@ async function writeFixtureCatalog(root: string) {
     aliases: ['demo'],
     status: 'active',
     scmp: { service: 'ptc-demo' },
-    repo: { gitlabPath: 'ptc/fe/demo', activeBranch: 'release-1.2.3' },
+    repo: { gitlabPath: 'ptc/fe/demo', localFolderHint: 'ptc-demo-folder', activeBranch: 'release-1.2.3' },
     domains: [{ host: 'demo.example.com', env: 'prod', status: 'active' }],
     gitlab: { issueProjectPath: 'ptc/fe/demo', defaultAssignee: 'xin', defaultAssignees: ['project-dev', 'project-qa'], labels: ['markit', 'bug'] },
     testing: { enabled: true, defaultViewport: 'desktop-1440', viewports: ['desktop-1440', 'mobile-390'] },

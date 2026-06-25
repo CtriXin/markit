@@ -28,6 +28,8 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('data-testid="url-input"');
     expect(source).toContain('Project Catalog');
     expect(source).toContain('可测试项目');
+    expect(source).toContain('catalogSyncSummary');
+    expect(source).toContain('localFolderHint');
     expect(source).toContain('testId="catalog-project-select"');
     expect(source).toContain('直接输入 URL 仍可测试');
     expect(source).toContain('SearchableSelect');
@@ -52,8 +54,7 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('mergeAiDraft');
     expect(source).toContain('selectedForIssueSubmit');
     expect(source).toContain('无需重复提交');
-    expect(source).toContain('提交中...');
-    expect(source).toContain('查看已有 Issue');
+    expect(source).toContain('上报中...');
     expect(source).toContain('issue-filter-tabs');
     expect(source).toContain('待提');
     expect(source).toContain('已挂');
@@ -66,7 +67,9 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('parseAssigneeInput');
     expect(source).toContain('assignees');
     expect(source).toContain('unresolvedAssignees');
-    expect(source).toContain('同步负责人 / 挂 Issue');
+    expect(source).toContain('上报');
+    expect(source).toContain('data-testid="bulk-issue-submit"');
+    expect(source).not.toContain('data-testid="bulk-issue-draft"');
     expect(source).not.toMatch(/ChatComposer|project\/run/i);
   });
 });

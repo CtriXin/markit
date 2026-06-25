@@ -28,6 +28,7 @@ type IssueProjectSnapshot = {
     scmpService?: string;
     issueProjectPath?: string;
     gitlabPath?: string;
+    localFolderHint?: string;
     activeBranch?: string;
     defaultAssignee?: string;
     defaultAssignees?: string[];
@@ -1142,6 +1143,7 @@ function feishuNotes(issue: IssuePayload, result: GitLabIssueResult): string {
     `Project: ${issue.projectName || issue.projectId || 'not configured'}`,
     `SCMP Service: ${issue.scmpService || 'not configured'}`,
     `Business Repo: ${issue.sourceProjectPath || 'not configured'}`,
+    `Local Folder Hint: ${issue.localFolderHint || 'not configured'}`,
     `Business Issue Project: ${issue.businessProjectPath || 'not configured'}`,
     `Branch: ${issue.branch || 'not configured'}`,
     `GitLab IID: ${result.iid}`,
@@ -1426,14 +1428,24 @@ function repoLabelValue(value: unknown): string {
   return labelValue(sshPath ?? urlPath ?? withoutGitSuffix);
 }
 
+function gitLabProjectPathValue(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const withoutGitSuffix = raw.replace(/\.git$/i, '');
+  const sshPath = withoutGitSuffix.match(/^[^@]+@[^:]+:(.+)$/)?.[1];
+  const urlPath = withoutGitSuffix.match(/^https?:\/\/[^/]+\/(.+)$/i)?.[1];
+  return (sshPath ?? urlPath ?? withoutGitSuffix).replace(/^\/+|\/+$/g, '');
+}
+
 function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, markdown: string, options: IssueSubmitOptions = { assignees: [] }) {
   const bug = detail.bug;
   const snapshot = detail.projectSnapshot as IssueProjectSnapshot | undefined;
   const project = snapshot?.project;
   const domain = snapshot?.domain?.host ?? safeHost(bug.finalUrl);
   const branch = project?.activeBranch ?? snapshot?.domain?.activeBranch ?? '';
-  const businessProjectPath = project?.issueProjectPath ?? project?.gitlabPath ?? '';
-  const sourceProjectPath = project?.gitlabPath ?? project?.issueProjectPath ?? '';
+  const businessProjectPath = gitLabProjectPathValue(project?.issueProjectPath ?? project?.gitlabPath);
+  const sourceProjectPath = gitLabProjectPathValue(project?.gitlabPath ?? project?.issueProjectPath);
+  const localFolderHint = project?.localFolderHint ?? '';
   const scmpService = project?.scmpService ?? '';
   const bindingStatus = project ? 'bound' : 'unbound';
   const labels = buildIssueLabels({
@@ -1457,6 +1469,7 @@ function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, m
     bindingStatus,
     sourceProjectPath,
     businessProjectPath,
+    localFolderHint,
     projectId: project?.id ?? '',
     projectName: project?.name ?? '',
     scmpService,
@@ -1493,7 +1506,7 @@ function severityRank(value: string): number {
 }
 
 function renderIssueDraftMarkdown(issues: Array<ReturnType<typeof issuePayloadFromDetail>>) {
-  return `# GitLab Issue Drafts\n\n${issues.map((issue, index) => `## ${index + 1}. ${issue.title}\n\n- Issue Hub: ${issue.projectPath}\n- Binding Status: ${issue.bindingStatus}\n- Business Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n- Domain: ${issue.domain}\n- Branch: ${issue.branch || 'not configured'}\n${renderAssigneeSuggestionLine(issue)}\n- Labels: ${issue.labels.join(', ')}\n- Export: ${issue.exportPath}\n- Source: ${issue.sourceUrl}\n\n${issue.description}`).join('\n\n---\n\n')}\n`;
+  return `# GitLab Issue Drafts\n\n${issues.map((issue, index) => `## ${index + 1}. ${issue.title}\n\n- Issue Hub: ${issue.projectPath}\n- Binding Status: ${issue.bindingStatus}\n- Business Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Local Folder Hint: ${issue.localFolderHint || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n- Domain: ${issue.domain}\n- Branch: ${issue.branch || 'not configured'}\n${renderAssigneeSuggestionLine(issue)}\n- Labels: ${issue.labels.join(', ')}\n- Export: ${issue.exportPath}\n- Source: ${issue.sourceUrl}\n\n${issue.description}`).join('\n\n---\n\n')}\n`;
 }
 
 function renderIssueDescription(issue: {
@@ -1505,6 +1518,7 @@ function renderIssueDescription(issue: {
   scmpService: string;
   sourceProjectPath: string;
   businessProjectPath: string;
+  localFolderHint: string;
   domain: string;
   branch: string;
   assignee: string;
@@ -1519,7 +1533,7 @@ function renderIssueDescription(issue: {
   expected: string;
   tags: string[];
 }, markdown: string): string {
-  return `${renderMarkitIssueMetadata(issue)}\n\n## Markit Routing\n\n- Issue Hub: ${issue.projectPath}\n- Binding Status: ${issue.bindingStatus}\n- Markit Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- SCMP Service: ${issue.scmpService || 'not configured'}\n- Bound Domain: ${issue.domain}\n- Current Branch: ${issue.branch || 'not configured'}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n${renderAssigneeSuggestionLine(issue)}\n- Labels: ${issue.labels.join(', ')}\n- Export Path: ${issue.exportPath}\n- Source URL: ${issue.sourceUrl}\n- Final URL: ${issue.finalUrl}\n\n---\n\n${markdown}\n`;
+  return `${renderMarkitIssueMetadata(issue)}\n\n## Markit Routing\n\n- Issue Hub: ${issue.projectPath}\n- Binding Status: ${issue.bindingStatus}\n- Markit Project: ${issue.projectName || 'not configured'}${issue.projectId ? ` (${issue.projectId})` : ''}\n- SCMP Service: ${issue.scmpService || 'not configured'}\n- Bound Domain: ${issue.domain}\n- Current Branch: ${issue.branch || 'not configured'}\n- Business Repo: ${issue.sourceProjectPath || 'not configured'}\n- Local Folder Hint: ${issue.localFolderHint || 'not configured'}\n- Business Issue Project: ${issue.businessProjectPath || 'not configured'}\n${renderAssigneeSuggestionLine(issue)}\n- Labels: ${issue.labels.join(', ')}\n- Export Path: ${issue.exportPath}\n- Source URL: ${issue.sourceUrl}\n- Final URL: ${issue.finalUrl}\n\n---\n\n${markdown}\n`;
 }
 
 function renderMarkitIssueMetadata(issue: {
@@ -1531,6 +1545,7 @@ function renderMarkitIssueMetadata(issue: {
   scmpService: string;
   sourceProjectPath: string;
   businessProjectPath: string;
+  localFolderHint: string;
   domain: string;
   branch: string;
   labels: string[];
@@ -1551,6 +1566,7 @@ function renderMarkitIssueMetadata(issue: {
     scmpService: issue.scmpService,
     businessRepo: issue.sourceProjectPath,
     businessIssueProject: issue.businessProjectPath,
+    localFolderHint: issue.localFolderHint,
     domain: issue.domain,
     branch: issue.branch,
     severity: issue.severity,
@@ -1675,7 +1691,7 @@ function renderMarkdown(detail: Awaited<ReturnType<typeof bugDetail>>, groups: M
   const acceptanceRows = atomicAcceptanceRowsFromDetail(detail, groups);
   const acceptanceByAnnotationId = new Map(acceptanceRows.map((row) => [row.annotationId, row]));
   const projectLines = project
-    ? `- Project: ${project.name} (${project.id})\n- Domain: ${domain?.host ?? 'none'}${domain?.status ? ` / ${domain.status}` : ''}\n- Branch: ${project.activeBranch ?? domain?.activeBranch ?? 'none'}\n- Business GitLab: ${project.issueProjectPath ?? project.gitlabPath ?? 'none'}\n`
+    ? `- Project: ${project.name} (${project.id})\n- Domain: ${domain?.host ?? 'none'}${domain?.status ? ` / ${domain.status}` : ''}\n- Branch: ${project.activeBranch ?? domain?.activeBranch ?? 'none'}\n- Business GitLab: ${project.issueProjectPath ?? project.gitlabPath ?? 'none'}\n- Local Folder Hint: ${project.localFolderHint ?? 'none'}\n`
     : '';
   const references = bug.references.length
     ? `\n## References\n\n${bug.references.map((reference) => `- ${reference.label ?? reference.kind}: ${reference.url}`).join('\n')}\n`
