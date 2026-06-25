@@ -471,7 +471,7 @@ async function gitExec(
     execEnv.MARKIT_CATALOG_GIT_USERNAME = username;
   }
   try {
-    const result = await execFile('git', ['-C', root, ...args], {
+    const result = await execFile('git', ['-c', `safe.directory=${root}`, '-C', root, ...args], {
       env: execEnv,
       timeout: config.timeoutMs,
       maxBuffer: 1_000_000
