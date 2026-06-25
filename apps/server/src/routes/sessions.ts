@@ -214,7 +214,7 @@ export function sessionsRouter(context: ServerContext): Router {
       res.write(`event: frame\ndata: ${payload}\n\n`);
     });
 
-    await client.send('Page.startScreencast', { format: 'jpeg', quality: 40, everyNthFrame: 3 });
+    await client.send('Page.startScreencast', { format: 'jpeg', quality: 55, everyNthFrame: 1 });
   }));
 
 

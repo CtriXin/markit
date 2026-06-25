@@ -219,6 +219,20 @@ export function App() {
 
   useEffect(() => {
     if (view !== 'session') return;
+    const onWheelCapture = (event: WheelEvent) => {
+      if (tool !== 'browse') return;
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest('[data-live-canvas="true"]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      handleBrowseWheel(event);
+    };
+    window.addEventListener('wheel', onWheelCapture, { capture: true, passive: false });
+    return () => window.removeEventListener('wheel', onWheelCapture, true);
+  }, [view, tool, busy, session?.id, capture?.id]);
+
+  useEffect(() => {
+    if (view !== 'session') return;
     const onPaste = (event: ClipboardEvent) => {
       const files = Array.from(event.clipboardData?.files ?? []).filter((file) => assetMimeTypes.includes(file.type));
       if (!files.length) return;
@@ -960,6 +974,10 @@ export function App() {
     event.stopPropagation();
     if (tool !== 'browse') return;
     event.preventDefault();
+    handleBrowseWheel(event);
+  }
+
+  function handleBrowseWheel(event: { clientX: number; clientY: number; deltaX: number; deltaY: number }) {
     if (busy || dragStartRef.current || freehandRef.current.length) return;
     const point = capturePoint(event);
     setLastPoint(point);
@@ -974,7 +992,7 @@ export function App() {
   function scheduleWheelScroll() {
     if (wheelFrameRef.current || wheelTimerRef.current) return;
     const elapsed = performance.now() - wheelLastSentRef.current;
-    const wait = Math.max(0, 28 - elapsed);
+    const wait = Math.max(0, 16 - elapsed);
     wheelTimerRef.current = window.setTimeout(() => {
       wheelTimerRef.current = undefined;
       wheelFrameRef.current = window.requestAnimationFrame(flushWheelScroll);
@@ -2523,7 +2541,11 @@ function boundsForPath(path: Point[]): Rect {
 }
 
 function clampWheelDelta(value: number): number {
-  return Math.max(-900, Math.min(900, value));
+  return clamp(value, -900, 900);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function pickTarget(targets: DomTarget[], point: Point): DomTarget | undefined {
