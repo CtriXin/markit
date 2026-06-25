@@ -6,6 +6,16 @@ OS: Rocky Linux 9.6
 Domain: markit.adsconflux.xyz (HTTPS 由 STGW 终止)
 Port: 8866 (内网 nginx)
 
+## 当前生产状态（2026-06-25 18:21 CST）
+
+| 项目 | 状态 | 证据 |
+|---|---|---|
+| Markit app | ready | `/opt/markit/app` = `main@c091841`，`systemctl is-active markit` = `active` |
+| Project catalog sync | ready | `/api/catalog/status.sync.status` = `synced`，`commitBefore=6b73872`，`commitAfter=44bea77` |
+| Catalog route smoke | ready | `quizhew.com` 解析到 `情感测试三 / ptc-ai-emotion`，并返回 `localFolderHint=ptc-ai-emotion` |
+| 内网访问 | ready | `http://10.153.48.26:8866/api/catalog/status` 返回 enabled catalog |
+| 公网 HTTPS | blocked | `https://markit.adsconflux.xyz/api/catalog/status` 仍是 STGW `502 Bad Gateway`，这是网关后端池/健康检查问题，不是 Markit app/catalog sync 问题 |
+
 ## 0. 部署链路总览
 
 ```text
@@ -189,6 +199,12 @@ MARKIT_WEB_ORIGIN=http://10.153.48.26:8866
 MARKIT_JSON_LIMIT=90mb
 MARKIT_DATA_DIR=/var/lib/markit
 MARKIT_CATALOG_ROOT=/opt/markit/ptc-wiki
+MARKIT_CATALOG_SYNC=1
+MARKIT_CATALOG_SYNC_INTERVAL_MS=300000
+MARKIT_CATALOG_SYNC_TIMEOUT_MS=15000
+MARKIT_CATALOG_REMOTE_URL=https://gitlab.adsconflux.xyz/ptc/fe/ptc-wiki.git
+MARKIT_CATALOG_BRANCH=main
+MARKIT_CATALOG_GIT_USERNAME=oauth2
 
 MARKIT_GITLAB_BASE_URL=https://gitlab.adsconflux.xyz
 MARKIT_GITLAB_AUTH=token
@@ -220,6 +236,12 @@ MARKIT_FEISHU_CLI_AS=user
 | `MARKIT_WEB_ORIGIN` | 是 | nginx 的访问地址，用于 CORS |
 | `MARKIT_DATA_DIR` | 否 | 数据目录，默认 `.markit/` |
 | `MARKIT_CATALOG_ROOT` | 否 | ptc-wiki 路径，不设置时 catalog 功能禁用 |
+| `MARKIT_CATALOG_SYNC` | 否 | `1` 时读取 catalog 前按 TTL 自动 `git pull --ff-only` |
+| `MARKIT_CATALOG_SYNC_INTERVAL_MS` | 否 | catalog git sync TTL，生产当前 `300000` |
+| `MARKIT_CATALOG_SYNC_TIMEOUT_MS` | 否 | 单次 git sync timeout，生产当前 `15000` |
+| `MARKIT_CATALOG_REMOTE_URL` | 否 | 生产使用 HTTPS GitLab remote，避免依赖服务器 SSH key |
+| `MARKIT_CATALOG_BRANCH` | 否 | catalog 分支，生产当前 `main` |
+| `MARKIT_CATALOG_GIT_USERNAME` | 否 | HTTPS token 拉取时的 Git username，生产当前 `oauth2` |
 | `MARKIT_GITLAB_BASE_URL` | 是 | GitLab 地址 |
 | `MARKIT_GITLAB_AUTH` | 否 | `token` 或 `auto` |
 | `MARKIT_GITLAB_TOKEN` | 条件是 | `MARKIT_GITLAB_AUTH=token` 时必须 |
@@ -311,10 +333,20 @@ curl -s http://10.153.48.26:8866/api/health
 
 Markit 生产环境从 `/opt/markit/ptc-wiki` 读取项目/域名 catalog。这个仓库在 GitLab：`ptc/fe/ptc-wiki`。
 
+当前默认不需要手动更新。`MARKIT_CATALOG_SYNC=1` 时，Markit server 在读取 catalog 前会自动执行：
+
+```bash
+git -c safe.directory=/opt/markit/ptc-wiki -C /opt/markit/ptc-wiki \
+  pull --ff-only https://gitlab.adsconflux.xyz/ptc/fe/ptc-wiki.git main
+```
+
+认证通过临时 `GIT_ASKPASS` 完成，优先读取 `MARKIT_CATALOG_GIT_TOKEN`，没有时复用 `/etc/markit/markit.env` 中的 `MARKIT_GITLAB_TOKEN`。不要把 token 写进 remote URL。
+
 2026-06-25 实测注意点：
 
 - 服务器上 `/opt/markit/ptc-wiki` 的 remote 可能是 `git@gitlab.adsconflux.xyz:ptc/fe/ptc-wiki.git`；如果服务器没有 SSH key，普通 `git pull` 会卡在 publickey。
 - 服务器 `/etc/markit/markit.env` 已有 `MARKIT_GITLAB_TOKEN`，可以用临时 `GIT_ASKPASS` 做 HTTPS pull，不要把 token 写入 remote URL。
+- root 运行 git 时会遇到 `dubious ownership`，Markit 已在 catalog sync 内部加 `-c safe.directory=/opt/markit/ptc-wiki`。
 - 如果从 macOS 拷贝过仓库，可能出现 `._*` AppleDouble 资源叉文件；它们会让 git status 很脏，必要时清理。
 
 ```bash
