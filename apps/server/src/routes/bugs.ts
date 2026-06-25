@@ -1426,14 +1426,23 @@ function repoLabelValue(value: unknown): string {
   return labelValue(sshPath ?? urlPath ?? withoutGitSuffix);
 }
 
+function gitLabProjectPathValue(value: unknown): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  const withoutGitSuffix = raw.replace(/\.git$/i, '');
+  const sshPath = withoutGitSuffix.match(/^[^@]+@[^:]+:(.+)$/)?.[1];
+  const urlPath = withoutGitSuffix.match(/^https?:\/\/[^/]+\/(.+)$/i)?.[1];
+  return (sshPath ?? urlPath ?? withoutGitSuffix).replace(/^\/+|\/+$/g, '');
+}
+
 function issuePayloadFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, markdown: string, options: IssueSubmitOptions = { assignees: [] }) {
   const bug = detail.bug;
   const snapshot = detail.projectSnapshot as IssueProjectSnapshot | undefined;
   const project = snapshot?.project;
   const domain = snapshot?.domain?.host ?? safeHost(bug.finalUrl);
   const branch = project?.activeBranch ?? snapshot?.domain?.activeBranch ?? '';
-  const businessProjectPath = project?.issueProjectPath ?? project?.gitlabPath ?? '';
-  const sourceProjectPath = project?.gitlabPath ?? project?.issueProjectPath ?? '';
+  const businessProjectPath = gitLabProjectPathValue(project?.issueProjectPath ?? project?.gitlabPath);
+  const sourceProjectPath = gitLabProjectPathValue(project?.gitlabPath ?? project?.issueProjectPath);
   const scmpService = project?.scmpService ?? '';
   const bindingStatus = project ? 'bound' : 'unbound';
   const labels = buildIssueLabels({

@@ -25,9 +25,9 @@ const projectSnapshot = {
     name: 'Demo Project',
     status: 'active',
     scmpService: 'ptc-demo-service',
-    gitlabPath: 'ptc/fe/demo',
+    gitlabPath: 'git@gitlab.adsconflux.xyz:ptc/fe/demo.git',
     activeBranch: 'release-1.2.3',
-    issueProjectPath: 'ptc/fe/demo',
+    issueProjectPath: 'git@gitlab.adsconflux.xyz:ptc/fe/demo.git',
     defaultAssignee: 'xin',
     labels: ['markit', 'bug']
   },
