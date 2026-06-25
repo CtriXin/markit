@@ -199,6 +199,17 @@ MARKIT_MODEL_BASE_URL=http://10.153.22.17/openapi/v1
 MARKIT_MODEL_API_KEY=na_xxx
 MARKIT_MODEL_ID=qwen3.5-plus
 MARKIT_MODEL_MULTIMODAL=true
+
+# Optional: GitLab issue created -> Feishu Base sync.
+# 2026-06-25: keep disabled until Feishu app approval + server user auth pass.
+MARKIT_FEISHU_SYNC=0
+MARKIT_FEISHU_AUTH=auto
+MARKIT_FEISHU_BASE_URL=https://open.feishu.cn
+MARKIT_FEISHU_BASE_TOKEN=I7m2bnPDgaYnwksqp1jcmmW9nOd
+MARKIT_FEISHU_TABLE_ID=tbl0yrCubWcpZCvw
+MARKIT_FEISHU_ATTACHMENT_FIELD_ID=fldKBwIUX2
+MARKIT_FEISHU_OWNER_OPEN_IDS=ou_30c6391467af3f8ffb00e07bac50b368
+MARKIT_FEISHU_CLI_AS=user
 ```
 
 ### Env 字段说明
@@ -217,6 +228,13 @@ MARKIT_MODEL_MULTIMODAL=true
 | `MARKIT_MODEL_API_KEY` | 条件是 | `openai-compatible` 时 |
 | `MARKIT_MODEL_ID` | 否 | 模型 ID，默认 `qwen3.5-plus` |
 | `MARKIT_MODEL_MULTIMODAL` | 否 | 是否支持图片输入 |
+| `MARKIT_FEISHU_SYNC` | 否 | `1` 时 GitLab Work Item 创建成功后同步飞书 Base |
+| `MARKIT_FEISHU_AUTH` | 否 | `auto` / `token` / `lark-cli`，服务器当前推荐 `auto` + `lark-cli --as user` |
+| `MARKIT_FEISHU_BASE_TOKEN` | 条件是 | 飞书 Base app token，默认当前问题表 |
+| `MARKIT_FEISHU_TABLE_ID` | 条件是 | 飞书 Base table ID |
+| `MARKIT_FEISHU_ATTACHMENT_FIELD_ID` | 条件是 | 飞书附件字段 ID |
+| `MARKIT_FEISHU_OWNER_OPEN_IDS` | 否 | 飞书 user 字段 open_id；宋鑫是 `ou_30c6391467af3f8ffb00e07bac50b368` |
+| `MARKIT_FEISHU_CLI_AS` | 否 | `user` 或 `bot`；bot 写 Base 前必须先确认权限已通过 |
 
 ## 5. 服务管理
 
@@ -289,6 +307,50 @@ sleep 2 && curl -s http://127.0.0.1:4317/api/health
 curl -s http://10.153.48.26:8866/api/health
 ```
 
+### 更新 ptc-wiki catalog
+
+Markit 生产环境从 `/opt/markit/ptc-wiki` 读取项目/域名 catalog。这个仓库在 GitLab：`ptc/fe/ptc-wiki`。
+
+2026-06-25 实测注意点：
+
+- 服务器上 `/opt/markit/ptc-wiki` 的 remote 可能是 `git@gitlab.adsconflux.xyz:ptc/fe/ptc-wiki.git`；如果服务器没有 SSH key，普通 `git pull` 会卡在 publickey。
+- 服务器 `/etc/markit/markit.env` 已有 `MARKIT_GITLAB_TOKEN`，可以用临时 `GIT_ASKPASS` 做 HTTPS pull，不要把 token 写入 remote URL。
+- 如果从 macOS 拷贝过仓库，可能出现 `._*` AppleDouble 资源叉文件；它们会让 git status 很脏，必要时清理。
+
+```bash
+cd /path/to/oracle-server
+python3 scripts/company-jump-run.py persona "
+  set -a
+  . /etc/markit/markit.env
+  set +a
+  cat > /tmp/markit-git-askpass.sh <<'EOF'
+#!/bin/sh
+case \"\$1\" in
+  *Username*) printf '%s\n' oauth2 ;;
+  *) printf '%s\n' \"\$MARKIT_GITLAB_TOKEN\" ;;
+esac
+EOF
+  chmod 700 /tmp/markit-git-askpass.sh
+  cd /opt/markit/ptc-wiki &&
+  find . -name '._*' -type f -delete &&
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/markit-git-askpass.sh \
+    git -c safe.directory=/opt/markit/ptc-wiki \
+    pull --ff-only https://gitlab.adsconflux.xyz/ptc/fe/ptc-wiki.git main
+  rc=\$?
+  rm -f /tmp/markit-git-askpass.sh
+  exit \$rc
+"
+```
+
+更新后验证：
+
+```bash
+python3 scripts/company-jump-run.py persona \
+  "curl -s 'http://127.0.0.1:4317/api/catalog/resolve?url=https%3A%2F%2Fquizhew.com%2F' | head -c 1200"
+```
+
+2026-06-25 实测 `quizhew.com` 已解析为 `情感测试三 / ptc-ai-emotion`，catalog 计数为 `projectCount=166`、`domainCount=837`。
+
 ### update.sh 内容
 
 ```bash
@@ -331,7 +393,7 @@ cd /opt/markit
 git clone git@github.com:CtriXin/markit.git app
 
 # ptc-wiki catalog
-git clone git@gitlab.adsconflux.xyz:ptc/ptc-wiki.git ptc-wiki
+git clone git@gitlab.adsconflux.xyz:ptc/fe/ptc-wiki.git ptc-wiki
 ```
 
 ### 7.3 安装 Playwright 和 Chromium
@@ -420,9 +482,19 @@ systemctl enable --now markit
 **如果 STGW 返回 502：**
 1. 确认 nginx 正常运行：`systemctl status nginx`
 2. 确认 8866 端口可访问：`curl http://10.153.48.26:8866/`
-3. 找运维检查 STGW 后端池配置：
+3. 确认 Host header 不影响本机 nginx：`curl -sI -H "Host: markit.adsconflux.xyz" http://10.153.48.26:8866/`
+4. 找运维检查 STGW 后端池配置：
    - 后端地址是否为 `10.153.48.26:8866`
    - 健康检查路径/端口是否配置正确
+
+2026-06-25 实测：
+
+- `http://10.153.48.26:8866/` 返回 `200 OK`
+- `http://10.153.48.26:8866/api/health` 返回 `ok:true`
+- `Host: markit.adsconflux.xyz` 直打 `10.153.48.26:8866` 返回 `200 OK`
+- `https://markit.adsconflux.xyz` 仍返回 STGW `502`
+
+因此这类 502 优先判断为 STGW 到后端池的转发/健康检查问题，不是 Markit systemd 或 nginx 本体问题。
 
 ### 直连（内网 HTTP）
 
@@ -490,6 +562,27 @@ curl -H "PRIVATE-TOKEN: <token>" https://gitlab.adsconflux.xyz/api/v4/user
 ```
 
 如果 token 过期，在 GitLab → Settings → Access Tokens 重新生成。
+
+### 10.5 Feishu sync 卡住
+
+当前 Feishu sync 有两层权限：
+
+1. 飞书开发者后台 app scopes：服务器 app `cli_aaa08cdcb9b95bcb` 必须申请 `base:app:read`、`base:table:read`、`base:field:read`、`base:record:create`、`base:record:read`、`base:record:update`、`drive:file:upload`、`auth:user.id:read`、`offline_access`。
+2. 服务器 user auth：scope 审批通过后，在服务器上跑 `lark-cli auth login --domain base --domain drive --scope 'auth:user.id:read offline_access' --no-wait --json`，把链接给宋鑫授权，再用 `lark-cli auth login --device-code <device_code>` 完成登录。
+
+2026-06-25 审批未通过前的实测状态：
+
+- `lark-cli auth status`：bot ready，user missing。
+- `lark-cli base +base-get --as bot`：返回 `app_scope_not_applied`，缺 `base:app:read`。
+- 生产 `/etc/markit/markit.env` 暂未开启 `MARKIT_FEISHU_SYNC=1`，避免测试同学创建 issue 时反复看到 Feishu 失败。
+
+审批通过后再开启：
+
+```ini
+MARKIT_FEISHU_SYNC=1
+MARKIT_FEISHU_AUTH=auto
+MARKIT_FEISHU_CLI_AS=user
+```
 
 ## 11. 关键 API 端点
 
