@@ -7,6 +7,7 @@ import type { ServerContext } from '../context.js';
 import { loadCatalog, projectSnapshotFromCatalog, resolveCatalogUrl, type ProjectSnapshot } from '../catalog.js';
 import { parseHttpUrl, MarkitHttpError } from '../url-safety.js';
 import { capturePage } from '../runtime/capture.js';
+import { waitForPageFonts } from '../runtime/readiness.js';
 import { asyncHandler, nowIso } from './helpers.js';
 import { mapCapture, mapSession } from './mappers.js';
 
@@ -214,6 +215,7 @@ export function sessionsRouter(context: ServerContext): Router {
       res.write(`event: frame\ndata: ${payload}\n\n`);
     });
 
+    await waitForPageFonts(context.runtime.getPage(sessionId) ?? await ensureSessionPage(context, sessionId, session));
     await client.send('Page.startScreencast', { format: 'jpeg', quality: 55, everyNthFrame: 1 });
   }));
 

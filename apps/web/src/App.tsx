@@ -18,6 +18,7 @@ type BugReference = { kind: 'requirement' | 'design' | 'compare' | 'other'; url:
 type BugAsset = { id: string; bugId: string; kind: string; fileName: string; mimeType: string; sizeBytes: number; label?: string; createdAt: string };
 type DraftAsset = { id: string; kind: 'pasted-screenshot' | 'uploaded-screenshot'; fileName: string; mimeType: string; sizeBytes: number; dataUrl: string; label: string };
 type QuickComment = { annotationId: string; captureId: string; rect: Rect; text: string };
+type AtomicAcceptanceRow = { code: string; annotationId: string; viewport: string; target: string; selector: string; actual: string; expected: string; acceptance: string; geometry: string; binding: string };
 type Bug = { id: string; sessionId: string; title: string; actual: string; expected: string; severity: string; status: string; sourceUrl: string; finalUrl: string; primaryCaptureId?: string; tags: string[]; references: BugReference[]; projectSnapshot?: ProjectSnapshot; annotationCount?: number; assetCount?: number; exportPath?: string; issueSubmission?: IssueSubmission; createdAt?: string; updatedAt?: string };
 type BugDetail = { bug: Bug; annotations: Annotation[]; captures: Capture[]; assets: BugAsset[]; projectSnapshot?: ProjectSnapshot };
 type IssueSubmission = { bugId: string; title: string; projectPath?: string; iid?: number; id?: number; workItemUrl: string; webUrl: string; assignee?: string; assignees?: string[]; unresolvedAssignees?: string[]; assigneeResolved?: boolean; reused?: boolean; synced?: boolean; remoteEvidenceCount?: number; uploadedEvidence?: Array<{ filePath: string; markdown: string; assetUrl?: string }> };
@@ -1115,7 +1116,7 @@ export function App() {
                       key={annotation.id}
                       onClick={() => { setSelectedAnnotationIds([annotation.id]); setRightCollapsed(false); }}
                     >
-                      <strong>#{index + 1} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong>
+                      <strong>{annotationCode(index)} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong>
                       <span className="mk-comment-time">待选</span>
                       <span className="mk-comment-status is-candidate">待归类</span>
                       <p>{annotation.note || '还没有填写标注说明'}</p>
@@ -1338,7 +1339,7 @@ function DeviceFrame(props: {
               <svg className="mk-overlay" viewBox={`0 0 ${capture.imageSize.width} ${capture.imageSize.height}`}>
                 {props.domTargets.map((target) => props.tool === 'element' ? <rect key={target.id} className="mk-target-rect" x={target.captureRect.x} y={target.captureRect.y} width={target.captureRect.width} height={target.captureRect.height} /> : null)}
                 {props.activeTarget && ['pointer', 'element', 'section'].includes(props.tool) ? <rect className="mk-target-active" x={props.activeTarget.captureRect.x} y={props.activeTarget.captureRect.y} width={props.activeTarget.captureRect.width} height={props.activeTarget.captureRect.height} /> : null}
-                {props.annotations.map((annotation, index) => <AnnotationShape key={annotation.id} annotation={annotation} selected={props.selectedAnnotationIds.includes(annotation.id)} index={index + 1} />)}
+                {props.annotations.map((annotation, index) => <AnnotationShape key={annotation.id} annotation={annotation} selected={props.selectedAnnotationIds.includes(annotation.id)} label={annotationCode(index)} />)}
                 {props.dragStart ? <circle className="mk-rect-start" cx={props.dragStart.x} cy={props.dragStart.y} r="6" /> : null}
                 {props.rectPreview && (props.rectPreview.width > 2 || props.rectPreview.height > 2) ? (
                   props.tool === 'ellipse'
@@ -1774,6 +1775,7 @@ function BugPanel(props: {
   updateAnnotation: (id: string, patch: Partial<Annotation>) => Promise<void>;
   deleteAnnotation: (id: string) => Promise<void>;
 }) {
+  const [copiedAcceptance, setCopiedAcceptance] = useState(false);
   const update = (key: keyof DraftBug, value: string) => {
     props.setDraft((current) => ({ ...current, [key]: value }));
     if (value.trim()) props.resolveAiFollowup(key);
@@ -1799,6 +1801,19 @@ function BugPanel(props: {
       ? `已选 ${selectedCount} 条；保存后会从候选区移出，进入 Bug 列表。`
       : '未勾选时默认使用最后一条待归类标注；可勾选多条合并成一个 Bug。'
     : '暂无待归类标注；保存成 Bug 的标注会自动移出候选区。';
+  const acceptanceAnnotations = useMemo(() => {
+    if (!props.annotations.length) return [];
+    if (!selectedCount) return props.annotations;
+    const selected = new Set(props.selectedAnnotationIds);
+    return props.annotations.filter((annotation) => selected.has(annotation.id));
+  }, [props.annotations, props.selectedAnnotationIds, selectedCount]);
+  const acceptanceRows = useMemo(() => buildAtomicAcceptanceRows(acceptanceAnnotations, props.capture, props.draft), [acceptanceAnnotations, props.capture, props.draft]);
+  const copyAcceptancePacket = async () => {
+    if (!acceptanceRows.length) return;
+    await navigator.clipboard.writeText(renderAtomicAcceptanceMarkdown(acceptanceRows, props.draft.title || props.draft.comment || 'Markit Bug 草稿'));
+    setCopiedAcceptance(true);
+    window.setTimeout(() => setCopiedAcceptance(false), 1600);
+  };
   return (
     <div className="mk-bug-panel">
       <ProjectContextCard snapshot={props.session.projectSnapshot} fallbackHost={safeHost(props.session.currentUrl || props.session.sourceUrl)} />
@@ -1817,16 +1832,30 @@ function BugPanel(props: {
                   checked={props.selectedAnnotationIds.includes(annotation.id)}
                   onChange={(event) => toggleAnnotation(annotation.id, event.currentTarget.checked)}
                 />
-                <strong>#{index + 1} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong>
+                <strong><span className="mk-ann-code">{annotationCode(index)}</span> {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong>
               </label>
               <AnnotationNoteInput annotation={annotation} updateAnnotation={props.updateAnnotation} />
-              {annotation.target ? <small>{annotation.target.selector}</small> : null}
+              <ElementBindingSummary annotation={annotation} />
               <button className="mk-danger-button" onClick={() => props.deleteAnnotation(annotation.id)}>删除标注</button>
             </div>
           </article>
         ))}
         {props.annotations.length === 0 ? <p className="mk-empty">没有待归类标注。框选后可先写评论；保存为 Bug 后这里会自动清空对应证据。</p> : null}
       </section>
+      {acceptanceRows.length ? (
+        <section className="mk-panel-section mk-atomic-card" data-testid="atomic-acceptance-card">
+          <div className="mk-atomic-head">
+            <div>
+              <h3>原子验收表</h3>
+              <small>{selectedCount ? '按当前勾选标注生成' : '未勾选时覆盖全部待归类标注'}</small>
+            </div>
+            <button type="button" onClick={() => void copyAcceptancePacket()}>{copiedAcceptance ? '已复制' : '复制'}</button>
+          </div>
+          <div className="mk-atomic-rows">
+            {acceptanceRows.map((row) => <AtomicAcceptanceItem key={row.annotationId} row={row} />)}
+          </div>
+        </section>
+      ) : null}
       <section className="mk-panel-section mk-draft-card">
         <h2>Bug 草稿</h2>
         <small className="mk-draft-hint">先写一句；需要结构化再点 AI 预填。新建默认草稿。</small>
@@ -1969,6 +1998,105 @@ function AnnotationCropPreview({ annotation, capture }: { annotation: Annotation
       <img src={`/api/captures/${annotation.captureId}/image`} alt="标注截图区域" style={style} />
     </div>
   );
+}
+
+function AtomicAcceptanceItem({ row }: { row: AtomicAcceptanceRow }) {
+  return (
+    <article className="mk-atomic-row">
+      <div className="mk-atomic-row-head">
+        <strong>{row.code}</strong>
+        <span>{row.viewport}</span>
+      </div>
+      <dl>
+        <dt>对象</dt><dd>{row.target}</dd>
+        <dt>绑定</dt><dd>{row.binding}</dd>
+        <dt>实际</dt><dd>{row.actual}</dd>
+        <dt>期望</dt><dd>{row.expected}</dd>
+        <dt>验收</dt><dd>{row.acceptance}</dd>
+        <dt>位置</dt><dd>{row.geometry}</dd>
+      </dl>
+    </article>
+  );
+}
+
+function ElementBindingSummary({ annotation }: { annotation: Annotation }) {
+  const target = annotation.target;
+  if (!target) {
+    return <div className="mk-binding-summary is-unbound"><strong>截图区域</strong><span>{geometryLabel(annotation.geometry.captureRect)}</span></div>;
+  }
+  const label = target.label || target.text || target.value || target.tagName;
+  const copySelector = async () => {
+    await navigator.clipboard.writeText(target.selector);
+  };
+  return (
+    <div className="mk-binding-summary">
+      <div>
+        <strong>{label}</strong>
+        <span>{target.selectorKind} · score {Math.round(target.selectorScore)}</span>
+      </div>
+      <code>{target.selector}</code>
+      <small>{geometryLabel(target.captureRect)}</small>
+      <button type="button" onClick={() => void copySelector()}>复制 selector</button>
+    </div>
+  );
+}
+
+function buildAtomicAcceptanceRows(annotations: Annotation[], capture: Capture, draft: DraftBug): AtomicAcceptanceRow[] {
+  return annotations.map((annotation, index) => buildAtomicAcceptanceRow(annotation, index, capture, draft));
+}
+
+function buildAtomicAcceptanceRow(annotation: Annotation, index: number, capture: Capture | undefined, draft: DraftBug): AtomicAcceptanceRow {
+  const code = annotationCode(index);
+  const target = targetLabel(annotation);
+  const selector = annotation.target?.selector || 'screenshot-region';
+  const actual = firstText(annotation.note, draft.actual, draft.comment, `${target} 存在待确认问题。`);
+  const expected = firstText(draft.expected, bugTypeOptions.find((item) => item.value === draft.bugType)?.expected, '修复后页面应与需求和设计一致。');
+  const viewport = capture ? viewportLabel(capture) : '未绑定截图';
+  const acceptanceTarget = annotation.target ? `${annotation.target.selector}` : '标注截图区域';
+  return {
+    code,
+    annotationId: annotation.id,
+    viewport,
+    target,
+    selector,
+    actual,
+    expected,
+    acceptance: `在 ${viewport} 复查 ${acceptanceTarget}，问题现象消失，截图与期望一致。`,
+    geometry: geometryLabel(annotation.geometry.captureRect),
+    binding: annotation.target ? `${annotation.target.selectorKind} · score ${Math.round(annotation.target.selectorScore)}` : 'screenshot-only'
+  };
+}
+
+function renderAtomicAcceptanceMarkdown(rows: AtomicAcceptanceRow[], title: string): string {
+  const header = `# ${title}\n\n| ID | 视口 | 对象 | 绑定 | 实际 | 期望 | 验收 |\n| --- | --- | --- | --- | --- | --- | --- |`;
+  const body = rows.map((row) => `| ${row.code} | ${markdownCell(row.viewport)} | ${markdownCell(row.target)} | ${markdownCell(row.binding)} | ${markdownCell(row.actual)} | ${markdownCell(row.expected)} | ${markdownCell(row.acceptance)} |`).join('\n');
+  return `${header}\n${body}\n`;
+}
+
+function markdownCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
+}
+
+function annotationCode(index: number): string {
+  return `A${String(index + 1).padStart(2, '0')}`;
+}
+
+function targetLabel(annotation: Annotation): string {
+  const target = annotation.target;
+  if (!target) return annotationKindLabels[annotation.kind] ?? annotation.kind;
+  return firstText(target.label, target.text, target.value, target.tagName);
+}
+
+function viewportLabel(capture: Capture): string {
+  return `${capture.viewport.name || 'Viewport'} / ${capture.imageSize.width}x${capture.imageSize.height}`;
+}
+
+function geometryLabel(rect: Rect): string {
+  return `x${Math.round(rect.x)} y${Math.round(rect.y)} w${Math.round(rect.width)} h${Math.round(rect.height)}`;
+}
+
+function firstText(...values: Array<string | undefined>): string {
+  return values.map((value) => String(value ?? '').trim()).find(Boolean) ?? '';
 }
 
 type BugProjectGroup = {
@@ -2357,6 +2485,18 @@ function BugDetailPanel({ detail, issueState, patchBug, exportBug, deleteBug }: 
   const [edit, setEdit] = useState<Bug | undefined>(detail?.bug);
   useEffect(() => setEdit(detail?.bug), [detail?.bug.id]);
   if (!detail || !edit) return <aside className="mk-bug-detail"><p className="mk-empty">选择一个 Bug 查看证据。</p></aside>;
+  const captureById = new Map(detail.captures.map((item) => [item.id, item]));
+  const acceptanceRows = detail.annotations.map((annotation, index) => buildAtomicAcceptanceRow(annotation, index, captureById.get(annotation.captureId) ?? detail.captures[0], {
+    title: detail.bug.title,
+    actual: detail.bug.actual,
+    expected: detail.bug.expected,
+    severity: detail.bug.severity,
+    status: detail.bug.status,
+    comment: '',
+    bugType: detail.bug.tags?.[0] ?? '',
+    requirementUrl: '',
+    designUrl: ''
+  }));
   return (
     <aside className="mk-bug-detail" data-testid="bug-detail">
       <div className="mk-detail-head">
@@ -2379,7 +2519,8 @@ function BugDetailPanel({ detail, issueState, patchBug, exportBug, deleteBug }: 
       <dl className="mk-detail-meta"><dt>来源 URL</dt><dd>{detail.bug.sourceUrl}</dd><dt>最终 URL</dt><dd>{detail.bug.finalUrl}</dd><dt>导出路径</dt><dd>{detail.bug.exportPath || '尚未导出'}</dd></dl>
       {detail.bug.references.length ? <section className="mk-detail-evidence"><h3>引用 / 对比</h3>{detail.bug.references.map((reference) => <article key={`${reference.kind}-${reference.url}`}><strong>{reference.label ?? reference.kind}</strong><p>{reference.url}</p></article>)}</section> : null}
       {detail.assets.length ? <section className="mk-detail-evidence"><h3>截图 / 对比证据</h3><div className="mk-detail-assets">{detail.assets.map((asset) => <article key={asset.id}><img src={`/api/bug-assets/${asset.id}/image`} alt={asset.label || asset.fileName} /><strong>{asset.label || asset.kind}</strong><p>{asset.fileName} · {formatBytes(asset.sizeBytes)}</p></article>)}</div></section> : null}
-      <section className="mk-detail-evidence"><h3>证据</h3>{detail.annotations.map((annotation, index) => <article key={annotation.id}><strong>#{index + 1} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong><p>{annotation.note || detail.bug.title}</p>{annotation.target ? <small>{annotation.target.selector}</small> : null}</article>)}{detail.annotations.length === 0 ? <p className="mk-empty">还没有绑定标注证据。</p> : null}</section>
+      {acceptanceRows.length ? <section className="mk-detail-evidence mk-atomic-card"><h3>原子验收表</h3><div className="mk-atomic-rows">{acceptanceRows.map((row) => <AtomicAcceptanceItem key={row.annotationId} row={row} />)}</div></section> : null}
+      <section className="mk-detail-evidence"><h3>证据</h3>{detail.annotations.map((annotation, index) => <article key={annotation.id}><strong>{annotationCode(index)} {annotationKindLabels[annotation.kind] ?? annotation.kind}</strong><p>{annotation.note || detail.bug.title}</p><ElementBindingSummary annotation={annotation} /></article>)}{detail.annotations.length === 0 ? <p className="mk-empty">还没有绑定标注证据。</p> : null}</section>
     </aside>
   );
 }
@@ -2388,14 +2529,14 @@ function Settings({ aiStatus }: { aiStatus: AiStatus }) {
   return <section className="mk-settings"><h1>设置</h1><dl><dt>存储位置</dt><dd>.markit/</dd><dt>AI 通道</dt><dd>{aiStatus.provider} {aiStatus.enabled ? '已启用' : '未启用'}{aiStatus.supportsImages ? '，支持图片输入' : ''}{aiStatus.configSource ? `，来源 ${aiStatus.configSource}` : ''}</dd><dt>隐私</dt><dd>默认不会把截图字节发送给模型；仅在开启 MMF / multimodal provider 并点击 AI 预填草稿时发送对比截图。</dd><dt>快捷键</dt><dd>B 浏览 / V 指针 / P 标记 / R 框选 / O 圈选 / D 自由画 / E 元素 / S 区块 / C 截图 / F 适应 / A 快速保存 / Z 撤销标注 / 1-4 优先级 / Cmd+S 保存 / Cmd+V 粘贴截图</dd></dl></section>;
 }
 
-function AnnotationShape({ annotation, selected, index }: { annotation: Annotation; selected: boolean; index: number }) {
+function AnnotationShape({ annotation, selected, label }: { annotation: Annotation; selected: boolean; label: string }) {
   const rect = annotation.geometry.captureRect;
   const labelX = Math.max(8, rect.x + 8);
   const labelY = Math.max(18, rect.y + 20);
-  if (annotation.kind === 'pin') return <g><circle className={selected ? 'mk-ann-pin is-selected' : 'mk-ann-pin'} cx={rect.x} cy={rect.y} r="8" /><text className="mk-ann-label" x={rect.x + 11} y={rect.y - 10}>{index}</text></g>;
-  if (annotation.kind === 'ellipse') return <g><ellipse className={selected ? 'mk-ann-ellipse is-selected' : 'mk-ann-ellipse'} cx={rect.x + Math.max(rect.width, 8) / 2} cy={rect.y + Math.max(rect.height, 8) / 2} rx={Math.max(rect.width, 8) / 2} ry={Math.max(rect.height, 8) / 2} /><text className="mk-ann-label" x={labelX} y={labelY}>{index}</text></g>;
-  if (annotation.kind === 'freehand' && annotation.geometry.paths?.[0]) return <g><polyline className="mk-ann-freehand" points={annotation.geometry.paths[0].map((p) => `${p.x},${p.y}`).join(' ')} /><text className="mk-ann-label" x={labelX} y={labelY}>{index}</text></g>;
-  return <g><rect className={selected ? 'mk-ann-rect is-selected' : 'mk-ann-rect'} x={rect.x} y={rect.y} width={Math.max(rect.width, 8)} height={Math.max(rect.height, 8)} /><text className="mk-ann-label" x={labelX} y={labelY}>{index}</text></g>;
+  if (annotation.kind === 'pin') return <g><circle className={selected ? 'mk-ann-pin is-selected' : 'mk-ann-pin'} cx={rect.x} cy={rect.y} r="8" /><text className="mk-ann-label" x={rect.x + 11} y={rect.y - 10}>{label}</text></g>;
+  if (annotation.kind === 'ellipse') return <g><ellipse className={selected ? 'mk-ann-ellipse is-selected' : 'mk-ann-ellipse'} cx={rect.x + Math.max(rect.width, 8) / 2} cy={rect.y + Math.max(rect.height, 8) / 2} rx={Math.max(rect.width, 8) / 2} ry={Math.max(rect.height, 8) / 2} /><text className="mk-ann-label" x={labelX} y={labelY}>{label}</text></g>;
+  if (annotation.kind === 'freehand' && annotation.geometry.paths?.[0]) return <g><polyline className="mk-ann-freehand" points={annotation.geometry.paths[0].map((p) => `${p.x},${p.y}`).join(' ')} /><text className="mk-ann-label" x={labelX} y={labelY}>{label}</text></g>;
+  return <g><rect className={selected ? 'mk-ann-rect is-selected' : 'mk-ann-rect'} x={rect.x} y={rect.y} width={Math.max(rect.width, 8)} height={Math.max(rect.height, 8)} /><text className="mk-ann-label" x={labelX} y={labelY}>{label}</text></g>;
 }
 
 function HealthBadge({ health }: { health: HealthState }) {

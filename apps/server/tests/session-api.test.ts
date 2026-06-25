@@ -15,6 +15,7 @@ let dataDir: string;
 let fixtureBaseUrl: string;
 let apiBaseUrl: string;
 const gitLabApiRequests: Array<{ method: string; url: string; body: string }> = [];
+const feishuApiRequests: Array<{ method: string; url: string; body: string; authorization?: string }> = [];
 const projectSnapshot = {
   schema: 'markit.project-snapshot.v1',
   source: 'client',
@@ -23,6 +24,7 @@ const projectSnapshot = {
     id: 'ptc-demo',
     name: 'Demo Project',
     status: 'active',
+    scmpService: 'ptc-demo-service',
     gitlabPath: 'ptc/fe/demo',
     activeBranch: 'release-1.2.3',
     issueProjectPath: 'ptc/fe/demo',
@@ -58,6 +60,10 @@ describe('session and capture API', () => {
     fixtureServer = createServer((req, res) => {
       if (req.url?.startsWith('/api/v4/')) {
         void handleGitLabFixture(req, res);
+        return;
+      }
+      if (req.url?.startsWith('/open-apis/')) {
+        void handleFeishuFixture(req, res);
         return;
       }
       const urlPath = req.url === '/' ? '/index.html' : req.url || '/index.html';
@@ -132,6 +138,7 @@ describe('session and capture API', () => {
         sourceUrl: body.session.sourceUrl,
         finalUrl: body.capture.finalUrl,
         primaryCaptureId: body.capture.id,
+        tags: ['layout'],
         annotationIds: [annotationBody.annotation.id],
         assets: [{
           kind: 'pasted-screenshot',
@@ -183,9 +190,18 @@ describe('session and capture API', () => {
         assignee: 'xin'
       })]
     });
+    expect(issueDraft.issues[0].labels).toEqual(expect.arrayContaining([
+      'project:ptc-demo',
+      'service:ptc-demo-service',
+      'repo:ptc-fe-demo',
+      'domain:demo.example.com',
+      'type:layout'
+    ]));
     expect(await readFile(issueDraft.jsonPath, 'utf8')).toContain('markit.gitlab-issue-draft.v1');
     const issueMarkdown = await readFile(issueDraft.markdownPath, 'utf8');
     expect(issueMarkdown).toContain('[P2] demo.example.com - 粘贴截图证据');
+    expect(issueMarkdown).toContain('markit.gitlab-issue.v1');
+    expect(issueMarkdown).toContain('- SCMP Service: ptc-demo-service');
     expect(issueMarkdown).toContain('- Issue Hub: ptc/fe/ptc-wiki');
     expect(issueMarkdown).toContain('- Business Repo: ptc/fe/demo');
     const previousGitLab = {
@@ -378,6 +394,75 @@ describe('session and capture API', () => {
       restoreEnv('MARKIT_GITLAB_BASE_URL', previousGitLab.baseUrl);
       restoreEnv('MARKIT_GITLAB_AUTH', previousGitLab.auth);
       restoreEnv('MARKIT_GITLAB_TOKEN', previousGitLab.token);
+    }
+  }, 30_000);
+
+  it('optionally syncs created GitLab issues to Feishu Base records', async () => {
+    const item = await createBugForIssueSubmit('飞书同步字段验证');
+    const previous = {
+      gitlabBaseUrl: process.env.MARKIT_GITLAB_BASE_URL,
+      gitlabAuth: process.env.MARKIT_GITLAB_AUTH,
+      gitlabToken: process.env.MARKIT_GITLAB_TOKEN,
+      feishuSync: process.env.MARKIT_FEISHU_SYNC,
+      feishuBaseUrl: process.env.MARKIT_FEISHU_BASE_URL,
+      feishuToken: process.env.MARKIT_FEISHU_ACCESS_TOKEN,
+      feishuBaseToken: process.env.MARKIT_FEISHU_BASE_TOKEN,
+      feishuTableId: process.env.MARKIT_FEISHU_TABLE_ID,
+      feishuOwnerOpenIds: process.env.MARKIT_FEISHU_OWNER_OPEN_IDS
+    };
+    gitLabApiRequests.length = 0;
+    feishuApiRequests.length = 0;
+    process.env.MARKIT_GITLAB_BASE_URL = fixtureBaseUrl;
+    process.env.MARKIT_GITLAB_AUTH = 'token';
+    process.env.MARKIT_GITLAB_TOKEN = 'test-token';
+    process.env.MARKIT_FEISHU_SYNC = '1';
+    process.env.MARKIT_FEISHU_BASE_URL = fixtureBaseUrl;
+    process.env.MARKIT_FEISHU_ACCESS_TOKEN = 'feishu-test-token';
+    process.env.MARKIT_FEISHU_OWNER_OPEN_IDS = 'ou_songxin';
+    delete process.env.MARKIT_FEISHU_BASE_TOKEN;
+    delete process.env.MARKIT_FEISHU_TABLE_ID;
+    try {
+      const submitResponse = await fetch(`${apiBaseUrl}/api/bugs/issue-submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ bugIds: [item.bug.id] })
+      });
+      expect(submitResponse.status).toBe(200);
+      const submitBody = await submitResponse.json();
+      expect(submitBody.submissions[0].feishuSync).toMatchObject({ status: 'created', recordId: 'rec_markit_sync', attachmentFileTokens: ['file_markit_sync'] });
+      expect(feishuApiRequests).toHaveLength(3);
+      const createRequest = feishuApiRequests.find((request) => request.url.includes('/records'));
+      const mediaRequest = feishuApiRequests.find((request) => request.url.includes('/medias/upload_all'));
+      const appendRequest = feishuApiRequests.find((request) => request.url.includes('/append_attachments'));
+      expect(createRequest?.url).toContain('/open-apis/bitable/v1/apps/I7m2bnPDgaYnwksqp1jcmmW9nOd/tables/tbl0yrCubWcpZCvw/records');
+      expect(createRequest?.authorization).toBe('Bearer feishu-test-token');
+      expect(mediaRequest?.authorization).toBe('Bearer feishu-test-token');
+      expect(mediaRequest?.body).toContain('bitable_file');
+      expect(mediaRequest?.body).toContain('I7m2bnPDgaYnwksqp1jcmmW9nOd');
+      expect(appendRequest?.authorization).toBe('Bearer feishu-test-token');
+      const feishuBody = JSON.parse(createRequest?.body || '{}');
+      expect(feishuBody.fields).toMatchObject({
+        '域名或模板名称': 'ptc-demo-service / demo.example.com',
+        '优先级': 'P2(记得修复)',
+        '项目状态': '已创建',
+        '负责人': [{ id: 'ou_songxin' }],
+        comment: '飞书同步字段验证'
+      });
+      expect(feishuBody.fields['链接']).toContain('/-/work_items/101');
+      expect(feishuBody.fields['备注']).toContain('SCMP Service: ptc-demo-service');
+      expect(feishuBody.fields['备注']).toContain('Business Repo: ptc/fe/demo');
+      const appendBody = JSON.parse(appendRequest?.body || '{}');
+      expect(appendBody.attachments.rec_markit_sync.fldKBwIUX2[0]).toMatchObject({ file_token: 'file_markit_sync', image_width: 800, image_height: 500 });
+    } finally {
+      restoreEnv('MARKIT_GITLAB_BASE_URL', previous.gitlabBaseUrl);
+      restoreEnv('MARKIT_GITLAB_AUTH', previous.gitlabAuth);
+      restoreEnv('MARKIT_GITLAB_TOKEN', previous.gitlabToken);
+      restoreEnv('MARKIT_FEISHU_SYNC', previous.feishuSync);
+      restoreEnv('MARKIT_FEISHU_BASE_URL', previous.feishuBaseUrl);
+      restoreEnv('MARKIT_FEISHU_ACCESS_TOKEN', previous.feishuToken);
+      restoreEnv('MARKIT_FEISHU_BASE_TOKEN', previous.feishuBaseToken);
+      restoreEnv('MARKIT_FEISHU_TABLE_ID', previous.feishuTableId);
+      restoreEnv('MARKIT_FEISHU_OWNER_OPEN_IDS', previous.feishuOwnerOpenIds);
     }
   }, 30_000);
 
@@ -969,6 +1054,26 @@ async function handleGitLabFixture(req: IncomingMessage, res: ServerResponse) {
   }
   res.statusCode = 404;
   res.end(JSON.stringify({ message: 'not found' }));
+}
+
+async function handleFeishuFixture(req: IncomingMessage, res: ServerResponse) {
+  const body = await readRequestBody(req);
+  feishuApiRequests.push({ method: req.method ?? 'GET', url: req.url ?? '', body, authorization: req.headers.authorization });
+  res.setHeader('content-type', 'application/json');
+  if (req.method === 'POST' && req.url?.includes('/records')) {
+    res.end(JSON.stringify({ code: 0, msg: 'success', data: { record: { record_id: 'rec_markit_sync' } } }));
+    return;
+  }
+  if (req.method === 'POST' && req.url?.includes('/medias/upload_all')) {
+    res.end(JSON.stringify({ code: 0, msg: 'success', data: { file_token: 'file_markit_sync' } }));
+    return;
+  }
+  if (req.method === 'POST' && req.url?.includes('/append_attachments')) {
+    res.end(JSON.stringify({ code: 0, msg: 'success', data: {} }));
+    return;
+  }
+  res.statusCode = 404;
+  res.end(JSON.stringify({ code: 404, msg: 'not found' }));
 }
 
 function readRequestBody(req: IncomingMessage): Promise<string> {

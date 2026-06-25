@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PNG } from 'pngjs';
 import { collectDomTargets } from './dom-targets.js';
+import { waitForPageFonts } from './readiness.js';
 
 export type CaptureResult = {
   screenshotPath: string;
@@ -26,6 +27,7 @@ export async function capturePage(options: {
   const domTargetsPath = join(captureDir, 'dom-targets.json');
   const metadataPath = join(captureDir, 'metadata.json');
 
+  await waitForPageFonts(options.page);
   const buffer = await options.page.screenshot({ path: screenshotPath, fullPage: options.mode === 'fullPage', scale: 'css' });
   const png = PNG.sync.read(buffer);
   const scroll = await options.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
