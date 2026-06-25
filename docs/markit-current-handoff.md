@@ -228,8 +228,8 @@ MARKIT_FEISHU_CLI_AS=user
 现状：
 
 - 支持批量选择 Bug。
-- 支持 dry-run `挂到 Wiki Issue 草稿`。
-- 支持真实 `挂 Wiki Issue`，提交到 GitLab Hub `ptc/fe/ptc-wiki`。
+- 工作台只暴露一个 `上报` 按钮，提交到 GitLab Hub `ptc/fe/ptc-wiki`。
+- 后端仍保留 dry-run issue draft 接口供 agent/debug 使用，不作为测试/设计主流程按钮展示。
 - 一个 Markit Bug 默认对应一个 GitLab Work Item / Issue。
 - 提交时会上传 annotated screenshot、crop、对比截图到 GitLab uploads，并把返回 Markdown 写入 issue body。
 - GitLab issue body 包含 `markit.gitlab-issue.v1` 隐藏 metadata，labels 包含 `project:*`、`service:*`、`repo:*`、`domain:*`、`type:*`。
@@ -415,7 +415,8 @@ comment = bug title
 
 ### GitLab Submit
 
-- 完成 dry-run issue draft。
+- 完成单按钮 `上报` 主流程。
+- 保留 dry-run issue draft 后端接口供 debug。
 - 完成真实 GitLab Work Item submit。
 - 完成 GitLab uploads 截图证据。
 - 完成 GitLab body hidden metadata 和 project/service/repo/domain/type labels。
@@ -669,7 +670,7 @@ GitLab submit 人工验收：
 4. 保存为 Bug。
 5. 在 Bug list 勾选该 Bug。
 6. 负责人使用默认 `songxin` 或输入 GitLab username。
-7. 点击真实挂 Wiki Issue。
+7. 点击 `上报`。
 8. 验证卡片进入 `已挂`，显示 issue link。
 9. 打开 GitLab Work Item，验证 body 包含截图资源、项目、域名、branch、assignee 信息。
 10. 验证 GitLab body 包含 `markit.gitlab-issue.v1` metadata 和 `SCMP Service`；labels 包含 `project:*`、`service:*`、`repo:*`、`domain:*`、`type:*`。

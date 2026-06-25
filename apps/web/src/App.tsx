@@ -750,7 +750,7 @@ export function App() {
       if (signal) init.signal = signal;
       const body = await api<IssueSubmitResponse>('/api/bugs/issue-submit', init);
       const firstUrl = body.submissions[0]?.workItemUrl ?? body.submissions[0]?.webUrl ?? body.submitPath;
-      setMessage(`已真实创建 ${body.createdCount ?? body.count} 个 ptc-wiki GitLab Issue：${firstUrl}`);
+      setMessage(`已上报 ${body.createdCount ?? body.count} 个 ptc-wiki GitLab Issue：${firstUrl}`);
       await refreshBugs();
       if (selectedBugId && bugIds.includes(selectedBugId)) await loadBugDetail(selectedBugId);
       return body;
@@ -759,7 +759,7 @@ export function App() {
         setMessage('已停止等待 GitLab 挂载结果；如果后台已经开始提交，刷新后会回填状态。');
         throw error;
       }
-      setMessage(`真实挂 Issue 失败：${error instanceof Error ? error.message : String(error)}`);
+      setMessage(`上报失败：${error instanceof Error ? error.message : String(error)}`);
       throw error;
     }
   }
@@ -2191,7 +2191,7 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
   const selectedForIssueSubmit = selectedForAction.filter((bugId) => !issueUiHasSubmission(issueUiByBugId[bugId]) && issueUiByBugId[bugId]?.status !== 'submitting' && !props.bugs.find((bug) => bug.id === bugId)?.issueSubmission);
   const actionRunning = bulkAction.status === 'running';
   const submitIds = bulkAssignees.length ? selectedForAction : selectedForIssueSubmit;
-  const issueSubmitLabel = actionRunning ? '处理中...' : bulkAssignees.length ? '同步负责人 / 挂 Issue' : selectedForAction.length && !selectedForIssueSubmit.length ? '查看已有 Issue' : '真实挂 Wiki Issue';
+  const issueSubmitLabel = actionRunning ? '上报中...' : '上报';
   const assigneeHint = bulkAssignees.length ? `负责人：${bulkAssignees.join(', ')}` : '负责人：按项目绑定；没有绑定时默认当前 GitLab 用户';
   const rememberBulkAssignees = () => {
     if (!bulkAssignees.length) return;
@@ -2236,10 +2236,10 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
     submitAbortRef.current = controller;
     setIssueUiByBugId((current) => {
       const next = { ...current };
-      for (const bugId of submitIds) next[bugId] = { status: 'submitting', text: bulkAssignees.length ? '正在同步负责人 / 挂 Issue...' : '正在提交到 Wiki Issue...' };
+      for (const bugId of submitIds) next[bugId] = { status: 'submitting', text: bulkAssignees.length ? '正在同步负责人 / 上报...' : '正在上报...' };
       return next;
     });
-    setBulkAction({ status: 'running', action: 'submit', text: `正在同步 ${submitIds.length} 个 Wiki Issue...`, detail: `状态：loading；${assigneeHint}；${bulkAssignees.length ? '已挂载 Bug 会同步负责人，不会重复创建。' : `已跳过 ${selectedForAction.length - selectedForIssueSubmit.length} 个已挂载 Bug。`}步骤：导出 evidence -> 上传截图资源 -> 创建/同步 Work Item` });
+    setBulkAction({ status: 'running', action: 'submit', text: `正在上报 ${submitIds.length} 个 Bug...`, detail: `状态：loading；${assigneeHint}；${bulkAssignees.length ? '已挂载 Bug 会同步负责人，不会重复创建。' : `已跳过 ${selectedForAction.length - selectedForIssueSubmit.length} 个已挂载 Bug。`}步骤：导出 evidence -> 上传截图资源 -> 创建/同步 Work Item` });
     try {
       const result = await props.submitGitLabIssues(submitIds, controller.signal, bulkAssignees);
       const created = result.createdCount ?? result.count;
@@ -2343,7 +2343,6 @@ function BugsView(props: { bugs: Bug[]; selectedBugId: string; bugDetail: BugDet
               <small className="mk-assignee-help">这里填人，不填则用项目绑定负责人；再没有就用当前 GitLab 用户。</small>
             </label>
             <button data-testid="bulk-export" disabled={!selectedForAction.length || actionRunning} onClick={() => void runBulkExport()}>批量导出</button>
-            <button data-testid="bulk-issue-draft" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueDraft()}>挂到 Wiki Issue 草稿</button>
             <button data-testid="bulk-issue-submit" disabled={!selectedForAction.length || actionRunning} onClick={() => void runIssueSubmit()}>{issueSubmitLabel}</button>
             {bulkAction.status !== 'idle' ? (
               <div className={`mk-bulk-status is-${bulkAction.status}`} data-testid="bulk-action-status" role="status" aria-live="polite">
