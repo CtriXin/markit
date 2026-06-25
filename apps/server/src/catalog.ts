@@ -1,7 +1,14 @@
-import { access, readdir, readFile } from 'node:fs/promises';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { execFile as execFileCallback } from 'node:child_process';
+import { access, chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 
 export const DEFAULT_CATALOG_ROOT = '';
+const execFile = promisify(execFileCallback);
+const defaultSyncTtlMs = 5 * 60 * 1000;
+const defaultSyncTimeoutMs = 15 * 1000;
+const syncCache = new Map<string, { finishedAtMs: number; status: CatalogSyncStatus; promise?: Promise<CatalogSyncStatus> }>();
 
 export type CatalogOptions = {
   root?: string;
@@ -26,6 +33,21 @@ export type CatalogStatus = {
     repo?: string;
     syncPolicy?: string;
   };
+  sync?: CatalogSyncStatus;
+};
+
+export type CatalogSyncStatus = {
+  enabled: boolean;
+  status: 'synced' | 'skipped' | 'failed';
+  reason?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  commitBefore?: string;
+  commitAfter?: string;
+  branch?: string;
+  remote?: string;
+  cached?: boolean;
+  ttlMs?: number;
 };
 
 export type CatalogProject = {
@@ -38,6 +60,7 @@ export type CatalogProject = {
   pendingDomainCount: number;
   scmpService?: string;
   gitlabPath?: string;
+  localFolderHint?: string;
   activeBranch?: string;
   issueProjectPath?: string;
   defaultAssignee?: string;
@@ -103,6 +126,7 @@ export type ProjectSnapshot = {
     status: string;
     scmpService?: string;
     gitlabPath?: string;
+    localFolderHint?: string;
     activeBranch?: string;
     issueProjectPath?: string;
     defaultAssignee?: string;
@@ -147,7 +171,7 @@ type RawProject = {
   aliases?: string[];
   status?: string;
   scmp?: { service?: string };
-  repo?: { gitlabPath?: string; activeBranch?: string };
+  repo?: { gitlabPath?: string; localFolderHint?: string; activeBranch?: string };
   domains?: Array<{ host?: string; env?: string; status?: string; source?: string }>;
   gitlab?: { issueProjectPath?: string; defaultAssignee?: string; defaultAssignees?: string[]; labels?: string[] };
   testing?: { enabled?: boolean; defaultViewport?: string; viewports?: string[] };
@@ -174,8 +198,10 @@ type RawDomainEntry = {
 
 export async function loadCatalog(options: CatalogOptions = {}): Promise<LoadedCatalog> {
   const root = resolveCatalogRoot(options);
-  const disabled = (reason: string): LoadedCatalog => disabledCatalog(root, reason);
-  if (!(await exists(root))) return disabled('catalog_root_missing');
+  const env = options.env ?? process.env;
+  const sync = await syncCatalogRoot(root, env);
+  const disabled = (reason: string): LoadedCatalog => disabledCatalog(root, reason, sync);
+  if (!root || !(await exists(root))) return disabled('catalog_root_missing');
 
   const bindingPath = resolve(root, 'integrations/markit.json');
   if (!(await exists(bindingPath))) return disabled('markit_binding_missing');
@@ -215,7 +241,7 @@ export async function loadCatalog(options: CatalogOptions = {}): Promise<LoadedC
     }
 
     return {
-      status: enabledStatus(root, manifest, binding, projects.length, domainsByHost.size),
+      status: enabledStatus(root, manifest, binding, projects.length, domainsByHost.size, sync),
       projects,
       projectMap,
       domainsByHost,
@@ -289,6 +315,7 @@ export function projectSnapshotFromCatalog(input: {
   if (input.status.generatedAt) snapshot.catalogGeneratedAt = input.status.generatedAt;
   if (input.project.scmpService) snapshot.project.scmpService = input.project.scmpService;
   if (input.project.gitlabPath) snapshot.project.gitlabPath = input.project.gitlabPath;
+  if (input.project.localFolderHint) snapshot.project.localFolderHint = input.project.localFolderHint;
   if (input.project.activeBranch) snapshot.project.activeBranch = input.project.activeBranch;
   if (input.project.issueProjectPath) snapshot.project.issueProjectPath = input.project.issueProjectPath;
   if (input.project.defaultAssignee) snapshot.project.defaultAssignee = input.project.defaultAssignee;
@@ -316,9 +343,157 @@ function resolveCatalogRoot(options: CatalogOptions): string {
   return root ? resolve(root) : '';
 }
 
-function disabledCatalog(root: string, reason: string): LoadedCatalog {
+async function syncCatalogRoot(root: string, env: NodeJS.ProcessEnv): Promise<CatalogSyncStatus | undefined> {
+  const config = catalogSyncConfig(env);
+  if (!config.enabled) return { enabled: false, status: 'skipped', reason: 'sync_disabled' };
+  if (!root || !(await exists(root))) return { enabled: true, status: 'skipped', reason: 'catalog_root_missing' };
+  if (!(await exists(resolve(root, '.git')))) return { enabled: true, status: 'skipped', reason: 'not_git_worktree' };
+
+  const key = [
+    root,
+    config.remoteUrl || 'upstream',
+    config.branch || '',
+    String(config.ttlMs),
+    String(config.timeoutMs)
+  ].join('\n');
+  const now = Date.now();
+  const cached = syncCache.get(key);
+  if (cached?.promise) return { ...(await cached.promise), cached: true };
+  if (cached && now - cached.finishedAtMs < config.ttlMs) return { ...cached.status, cached: true };
+
+  const promise = performGitSync(root, env, config);
+  syncCache.set(key, {
+    finishedAtMs: now,
+    status: { enabled: true, status: 'skipped', reason: 'sync_in_progress', ttlMs: config.ttlMs },
+    promise
+  });
+  const status = await promise;
+  syncCache.set(key, { finishedAtMs: Date.now(), status });
+  return status;
+}
+
+function catalogSyncConfig(env: NodeJS.ProcessEnv): {
+  enabled: boolean;
+  ttlMs: number;
+  timeoutMs: number;
+  remoteUrl: string;
+  branch: string;
+} {
+  const syncMode = String(env.MARKIT_CATALOG_SYNC ?? '1').trim().toLowerCase();
   return {
-    status: { schema: 'markit.catalog.status.v1', enabled: false, root, reason },
+    enabled: !['0', 'false', 'off', 'no', 'disabled'].includes(syncMode),
+    ttlMs: positiveInt(env.MARKIT_CATALOG_SYNC_INTERVAL_MS, defaultSyncTtlMs),
+    timeoutMs: positiveInt(env.MARKIT_CATALOG_SYNC_TIMEOUT_MS, defaultSyncTimeoutMs),
+    remoteUrl: String(env.MARKIT_CATALOG_REMOTE_URL ?? '').trim(),
+    branch: String(env.MARKIT_CATALOG_BRANCH ?? '').trim()
+  };
+}
+
+async function performGitSync(
+  root: string,
+  env: NodeJS.ProcessEnv,
+  config: { ttlMs: number; timeoutMs: number; remoteUrl: string; branch: string }
+): Promise<CatalogSyncStatus> {
+  const startedAt = new Date().toISOString();
+  const statusBase = { enabled: true, startedAt, ttlMs: config.ttlMs };
+  let branch = '';
+  let remote = '';
+  let commitBefore = '';
+  try {
+    branch = await gitOutput(root, ['rev-parse', '--abbrev-ref', 'HEAD'], env, config, true);
+    remote = sanitizeGitUrl(config.remoteUrl || await gitOutput(root, ['remote', 'get-url', 'origin'], env, config, true));
+    commitBefore = await gitOutput(root, ['rev-parse', 'HEAD'], env, config, true);
+    const branchToPull = config.branch || branch || 'main';
+    const pullArgs = config.remoteUrl
+      ? ['pull', '--ff-only', config.remoteUrl, branchToPull]
+      : ['pull', '--ff-only'];
+    await gitExec(root, pullArgs, env, config);
+    const commitAfter = await gitOutput(root, ['rev-parse', 'HEAD'], env, config, true);
+    return stripUndefined({
+      ...statusBase,
+      status: 'synced' as const,
+      finishedAt: new Date().toISOString(),
+      commitBefore,
+      commitAfter,
+      branch: branchToPull,
+      remote
+    });
+  } catch (error) {
+    return stripUndefined({
+      ...statusBase,
+      status: 'failed' as const,
+      finishedAt: new Date().toISOString(),
+      reason: redactGitMessage(error instanceof Error ? error.message : String(error), env),
+      commitBefore,
+      branch,
+      remote
+    });
+  }
+}
+
+async function gitOutput(
+  root: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  config: { timeoutMs: number },
+  allowFailure = false
+): Promise<string> {
+  try {
+    const result = await gitExec(root, args, env, config);
+    return result.stdout.trim();
+  } catch (error) {
+    if (allowFailure) return '';
+    throw error;
+  }
+}
+
+async function gitExec(
+  root: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  config: { timeoutMs: number }
+): Promise<{ stdout: string; stderr: string }> {
+  const token = firstNonEmpty(env.MARKIT_CATALOG_GIT_TOKEN, env.MARKIT_GITLAB_TOKEN, env.GITLAB_TOKEN, env.GLAB_TOKEN);
+  const username = firstNonEmpty(env.MARKIT_CATALOG_GIT_USERNAME, 'oauth2');
+  const execEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...env,
+    GIT_TERMINAL_PROMPT: '0'
+  };
+  let askpassDir = '';
+  if (token) {
+    askpassDir = await mkdtemp(join(tmpdir(), 'markit-git-askpass-'));
+    const scriptPath = join(askpassDir, 'askpass.sh');
+    await writeFile(scriptPath, '#!/bin/sh\ncase "$1" in\n  *Username*) printf "%s" "$MARKIT_CATALOG_GIT_USERNAME" ;;\n  *) printf "%s" "$MARKIT_CATALOG_GIT_TOKEN" ;;\nesac\n');
+    await chmod(scriptPath, 0o700);
+    execEnv.GIT_ASKPASS = scriptPath;
+    execEnv.MARKIT_CATALOG_GIT_TOKEN = token;
+    execEnv.MARKIT_CATALOG_GIT_USERNAME = username;
+  }
+  try {
+    const result = await execFile('git', ['-C', root, ...args], {
+      env: execEnv,
+      timeout: config.timeoutMs,
+      maxBuffer: 1_000_000
+    });
+    return { stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
+  } catch (error) {
+    const detail = error as { message?: string; stdout?: string | Buffer; stderr?: string | Buffer; code?: number | string; signal?: string };
+    const output = [detail.stderr, detail.stdout, detail.message].filter(Boolean).map(String).join('\n').trim();
+    throw new Error(redactGitMessage(output || 'git command failed', env));
+  } finally {
+    if (askpassDir) await rm(askpassDir, { recursive: true, force: true });
+  }
+}
+
+function positiveInt(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function disabledCatalog(root: string, reason: string, sync?: CatalogSyncStatus): LoadedCatalog {
+  return {
+    status: { schema: 'markit.catalog.status.v1', enabled: false, root, reason, ...(sync ? { sync } : {}) },
     projects: [],
     projectMap: new Map(),
     domainsByHost: new Map(),
@@ -326,7 +501,7 @@ function disabledCatalog(root: string, reason: string): LoadedCatalog {
   };
 }
 
-function enabledStatus(root: string, manifest: RawManifest, binding: RawBinding, projectCount: number, domainCount: number): CatalogStatus {
+function enabledStatus(root: string, manifest: RawManifest, binding: RawBinding, projectCount: number, domainCount: number, sync?: CatalogSyncStatus): CatalogStatus {
   const status: CatalogStatus = {
     schema: 'markit.catalog.status.v1',
     enabled: true,
@@ -345,6 +520,7 @@ function enabledStatus(root: string, manifest: RawManifest, binding: RawBinding,
   if (binding.consumer?.id) status.integration.consumer = binding.consumer.id;
   if (binding.consumer?.repo) status.integration.repo = binding.consumer.repo;
   if (binding.workflow?.syncPolicy) status.integration.syncPolicy = binding.workflow.syncPolicy;
+  if (sync) status.sync = sync;
   return status;
 }
 
@@ -371,6 +547,7 @@ function toProject(raw: RawProject): CatalogProject | undefined {
   };
   if (raw.scmp?.service) project.scmpService = raw.scmp.service;
   if (raw.repo?.gitlabPath) project.gitlabPath = raw.repo.gitlabPath;
+  if (raw.repo?.localFolderHint) project.localFolderHint = raw.repo.localFolderHint;
   if (raw.repo?.activeBranch) project.activeBranch = raw.repo.activeBranch;
   if (raw.gitlab?.issueProjectPath) project.issueProjectPath = raw.gitlab.issueProjectPath;
   if (raw.gitlab?.defaultAssignee) project.defaultAssignee = raw.gitlab.defaultAssignee;
@@ -505,6 +682,7 @@ function projectSearchText(project: CatalogProject, domains: CatalogDomain[]): s
     ...project.aliases,
     project.scmpService,
     project.gitlabPath,
+    project.localFolderHint,
     project.activeBranch,
     project.issueProjectPath,
     ...domains.map((domain) => domain.host)
@@ -556,4 +734,22 @@ async function readJson<T>(path: string): Promise<T> {
 
 function firstNonEmpty(...values: Array<string | undefined>): string {
   return values.find((value) => value?.trim()) ?? '';
+}
+
+function sanitizeGitUrl(value: string): string {
+  return value.replace(/(https?:\/\/)([^/@\s]+@)/i, '$1***@');
+}
+
+function redactGitMessage(message: string, env: NodeJS.ProcessEnv): string {
+  const secrets = [
+    env.MARKIT_CATALOG_GIT_TOKEN,
+    env.MARKIT_GITLAB_TOKEN,
+    env.GITLAB_TOKEN,
+    env.GLAB_TOKEN
+  ].filter(Boolean) as string[];
+  return secrets.reduce((text, secret) => text.split(secret).join('[redacted]'), sanitizeGitUrl(message)).slice(0, 400);
+}
+
+function stripUndefined<T extends Record<string, unknown>>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== '')) as T;
 }

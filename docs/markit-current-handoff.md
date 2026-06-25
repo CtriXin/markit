@@ -284,6 +284,12 @@ MARKIT_FEISHU_CLI_AS=user
 - `catalog/domains.json`
 - `catalog/projects/*.json`
 
+当前 truth 边界：
+
+- 线上 Markit 只读 `ptc-wiki` git catalog，不运行时双读本机 `project-wiki`。
+- 本地 AI 可以从 `project-wiki`、`issue-tracking`、`scmp-ops`、source docs 发现 `需求名 / repo / folder / service / domain`，但共享记录要写回并 push 到 `ptc-wiki`。
+- `MARKIT_CATALOG_SYNC=1` 时，server 在读取 catalog 前按 TTL 执行 `git pull --ff-only`；失败不阻塞 Markit，`/api/catalog/status.sync` 会暴露 `synced` / `skipped` / `failed`。
+
 当前 API：
 
 - `GET /api/catalog/status`
@@ -296,8 +302,9 @@ MARKIT_FEISHU_CLI_AS=user
 - 项目/域名选择。
 - URL 反查项目绑定。
 - session `projectSnapshot` 持久化。
-- Bug export 带项目/域名/branch。
-- GitLab issue body 带业务 repo / branch / binding status / assignee suggestion / SCMP service / hidden metadata。
+- Bug export 带项目/域名/repo/folder hint/branch。
+- GitLab issue body 带业务 repo / folder hint / branch / binding status / assignee suggestion / SCMP service / hidden metadata。
+- Feishu Base 备注带 `Local Folder Hint`，方便修复 agent 从 bug 表关联 issue 后定位本地 repo/folder。
 - GitLab labels 带 `project:*`、`service:*`、`repo:*`、`domain:*`、`type:*`，避免域名绑定多个项目时 agent 误判。
 - 无项目绑定的 Bug 也能进入 Hub，并标记 `Binding Status: unbound` 和 `unbound-project` label。
 
@@ -486,7 +493,7 @@ pnpm probe:pixels
 
 ### Project Catalog
 
-- `ptc-wiki` schema 还没有完全承载 folder / repo / 需求 / 项目名 / branch / domain / 发布状态的完整 lifecycle。
+- `ptc-wiki` schema 已有 `repo.localFolderHint`，Markit 已读取并冻结到 session/issue；但不是所有项目都已补齐这个字段。
 - 还没有服务端 UI 来编辑 catalog。
 - 还没有和 CI / 发布记录自动同步 branch、发布时间、commit。
 - 还没有多环境 domain 分组。

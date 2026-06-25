@@ -311,6 +311,7 @@ function normalizeProjectSnapshot(value: unknown): ProjectSnapshot | undefined {
   if (typeof input.catalogGeneratedAt === 'string') snapshot.catalogGeneratedAt = input.catalogGeneratedAt;
   if (project.scmpService) snapshot.project.scmpService = String(project.scmpService);
   if (project.gitlabPath) snapshot.project.gitlabPath = String(project.gitlabPath);
+  if (project.localFolderHint) snapshot.project.localFolderHint = String(project.localFolderHint);
   if (project.activeBranch) snapshot.project.activeBranch = String(project.activeBranch);
   if (project.issueProjectPath) snapshot.project.issueProjectPath = String(project.issueProjectPath);
   if (project.defaultAssignee) snapshot.project.defaultAssignee = String(project.defaultAssignee);

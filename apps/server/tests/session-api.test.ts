@@ -26,6 +26,7 @@ const projectSnapshot = {
     status: 'active',
     scmpService: 'ptc-demo-service',
     gitlabPath: 'git@gitlab.adsconflux.xyz:ptc/fe/demo.git',
+    localFolderHint: 'ptc-demo-folder',
     activeBranch: 'release-1.2.3',
     issueProjectPath: 'git@gitlab.adsconflux.xyz:ptc/fe/demo.git',
     defaultAssignee: 'xin',
@@ -187,6 +188,7 @@ describe('session and capture API', () => {
         hubProjectPath: 'ptc/fe/ptc-wiki',
         sourceProjectPath: 'ptc/fe/demo',
         businessProjectPath: 'ptc/fe/demo',
+        localFolderHint: 'ptc-demo-folder',
         assignee: 'xin'
       })]
     });
@@ -204,6 +206,7 @@ describe('session and capture API', () => {
     expect(issueMarkdown).toContain('- SCMP Service: ptc-demo-service');
     expect(issueMarkdown).toContain('- Issue Hub: ptc/fe/ptc-wiki');
     expect(issueMarkdown).toContain('- Business Repo: ptc/fe/demo');
+    expect(issueMarkdown).toContain('- Local Folder Hint: ptc-demo-folder');
     const previousGitLab = {
       auth: process.env.MARKIT_GITLAB_AUTH,
       markit: process.env.MARKIT_GITLAB_TOKEN,
@@ -451,6 +454,7 @@ describe('session and capture API', () => {
       expect(feishuBody.fields['链接']).toContain('/-/work_items/101');
       expect(feishuBody.fields['备注']).toContain('SCMP Service: ptc-demo-service');
       expect(feishuBody.fields['备注']).toContain('Business Repo: ptc/fe/demo');
+      expect(feishuBody.fields['备注']).toContain('Local Folder Hint: ptc-demo-folder');
       const appendBody = JSON.parse(appendRequest?.body || '{}');
       expect(appendBody.attachments.rec_markit_sync.fldKBwIUX2[0]).toMatchObject({ file_token: 'file_markit_sync', image_width: 800, image_height: 500 });
     } finally {

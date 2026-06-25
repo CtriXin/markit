@@ -28,6 +28,8 @@ describe('bootstrap shell source', () => {
     expect(source).toContain('data-testid="url-input"');
     expect(source).toContain('Project Catalog');
     expect(source).toContain('可测试项目');
+    expect(source).toContain('catalogSyncSummary');
+    expect(source).toContain('localFolderHint');
     expect(source).toContain('testId="catalog-project-select"');
     expect(source).toContain('直接输入 URL 仍可测试');
     expect(source).toContain('SearchableSelect');
