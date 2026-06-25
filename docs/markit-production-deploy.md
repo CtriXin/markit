@@ -6,6 +6,30 @@ OS: Rocky Linux 9.6
 Domain: markit.adsconflux.xyz (HTTPS 由 STGW 终止)
 Port: 8866 (内网 nginx)
 
+## 0. 部署链路总览
+
+```text
+你的本地机器
+  │  修改代码 → pnpm build (本地验证)
+  │  git commit && git push origin main
+  ▼
+GitHub (github.com:CtriXin/markit.git)
+  │
+  ▼
+JumpServer (堡垒机, expect + oathtool OTP)
+  │  通过 company-jump-run.py 脚本连接
+  ▼
+生产服务器 (10.153.48.26, 主机名 VM-48-26-rockylinux)
+  │  git pull origin main
+  │  pnpm install --frozen-lockfile
+  │  pnpm build
+  │  systemctl restart markit
+  ▼
+nginx (:8866) → 用户通过 STGW HTTPS 或内网 HTTP 访问
+```
+
+关键：本地不需要直接 SSH 到服务器。通过 JumpServer 间接执行命令。
+
 ## 1. 架构概览
 
 ```text
@@ -20,10 +44,114 @@ Port: 8866 (内网 nginx)
 - 8866: nginx 对外端口（STGW 或直接 HTTP 访问）
 - 4317: Node.js API server（只监听 127.0.0.1，不对外暴露）
 
-## 2. 服务器目录结构
+## 2. 从本地部署到线上（完整流程）
+
+前置条件：
+
+- 代码已提交并推送到 GitHub (`git push origin main`)
+- 本机有 JumpServer 访问工具（`oracle-server/scripts/company-jump-run.py`）
+- JumpServer 密钥在 `oracle-server/secrets/jump-and-vpn.local.md`
+
+### 3.1 一键部署
+
+```bash
+cd /path/to/oracle-server
+python3 scripts/company-jump-run.py persona "
+  cd /opt/markit/app &&
+  git pull origin main &&
+  pnpm install --frozen-lockfile &&
+  pnpm build &&
+  systemctl restart markit &&
+  sleep 2 &&
+  curl -s http://127.0.0.1:4317/api/health
+"
+```
+
+`persona` 是 JumpServer 上 10.153.48.26 对应的目标名称（markit 和 persona 同机）。
+
+### 3.2 分步操作
+
+如果一键部署失败，可以分步排查：
+
+```bash
+# 1. 连接服务器，发送单个命令
+python3 scripts/company-jump-run.py persona "hostname"
+
+# 2. 拉取代码
+python3 scripts/company-jump-run.py persona "cd /opt/markit/app && git pull origin main"
+
+# 3. 如果服务器有本地改动导致 pull 失败，先 stash
+python3 scripts/company-jump-run.py persona "cd /opt/markit/app && git stash && git pull --ff-only origin main"
+
+# 4. 安装依赖和构建
+python3 scripts/company-jump-run.py persona "cd /opt/markit/app && pnpm install --frozen-lockfile && pnpm build"
+
+# 5. 重启服务
+python3 scripts/company-jump-run.py persona "systemctl restart markit"
+
+# 6. 验证
+python3 scripts/company-jump-run.py persona "curl -s http://127.0.0.1:4317/api/health"
+```
+
+### 3.3 本地代码 → 服务器流程图
 
 ```
-/opt/markit/
+本地开发
+  │ 修改 apps/web/src/App.tsx 或 apps/server/src/
+  │ pnpm build (检查是否能编译通过)
+  │ git commit + git push origin main
+  ▼
+GitHub 已包含最新代码
+  │
+  ▼
+通过 JumpServer 发送部署命令
+  │ python3 scripts/company-jump-run.py persona "..."
+  │
+  ▼
+服务器执行：
+  │ git pull origin main    ← 拉取最新代码
+  │ pnpm install             ← 同步依赖
+  │ pnpm build               ← 编译 web + server
+  │ systemctl restart markit ← 重启服务
+  │ curl .../api/health      ← 验证
+  ▼
+线上更新完成
+```
+
+### 3.4 如果服务器 Git 仓库没有 SSH key
+
+服务器上 `/opt/markit/app` 如果 clone 时用了 SSH 但没配 key，会 pull 失败。此时：
+
+```bash
+# 把远程改成 HTTPS（不需要配 key）
+python3 scripts/company-jump-run.py persona "cd /opt/markit/app && git remote set-url origin https://github.com/CtriXin/markit.git"
+```
+
+### 3.5 JumpServer 工具说明
+
+`company-jump-run.py` 是一个 expect 脚本自动化工具：
+
+- 用 oathtool（TOTP）生成一次性密码
+- 自动登录 JumpServer 菜单并选择目标
+- 把命令 base64 编码后传过去执行
+- 返回执行结果和退出码
+
+支持的 JumpServer 目标：
+- `persona` — 10.153.48.26（markit 所在服务器）
+- `crs`, `new`, `libre` — 其他服务器
+
+密钥存在 `oracle-server/secrets/jump-and-vpn.local.md`：
+- host / port / user / password
+- OTP seed（TOTP 密钥）
+
+如果 `oathtool` 未安装：
+
+```bash
+brew install oath-toolkit        # macOS
+dnf install oath-toolkit         # Linux
+```
+
+## 3. 服务器目录结构
 ├── app/                   # 代码仓库（git clone）
 │   ├── apps/
 │   │   ├── server/        # Express API
@@ -50,7 +178,7 @@ Port: 8866 (内网 nginx)
         └── dom-targets.json
 ```
 
-## 3. 环境变量
+## 4. 环境变量
 
 配置文件: `/etc/markit/markit.env`
 
@@ -90,7 +218,7 @@ MARKIT_MODEL_MULTIMODAL=true
 | `MARKIT_MODEL_ID` | 否 | 模型 ID，默认 `qwen3.5-plus` |
 | `MARKIT_MODEL_MULTIMODAL` | 否 | 是否支持图片输入 |
 
-## 4. 服务管理
+## 5. 服务管理
 
 ```bash
 # 状态检查
@@ -132,7 +260,7 @@ curl -sI -H "Host: markit.adsconflux.xyz" http://10.153.48.26:8866/
 # 预期: 200 OK
 ```
 
-## 5. 部署更新
+## 6. 服务器上手动更新
 
 ### 一键更新
 
@@ -175,11 +303,11 @@ sleep 2
 curl -s http://127.0.0.1:4317/api/health
 ```
 
-## 6. 初始部署（新机器）
+## 7. 初始部署（新机器）
 
 如果需要在另一台服务器上全新部署：
 
-### 6.1 系统依赖
+### 7.1 系统依赖
 
 ```bash
 # Rocky Linux / CentOS
@@ -193,7 +321,7 @@ dnf install -y nodejs
 corepack enable && corepack prepare pnpm@latest --activate
 ```
 
-### 6.2 克隆代码
+### 7.2 克隆代码
 
 ```bash
 mkdir -p /opt/markit
@@ -206,7 +334,7 @@ git clone git@github.com:CtriXin/markit.git app
 git clone git@gitlab.adsconflux.xyz:ptc/ptc-wiki.git ptc-wiki
 ```
 
-### 6.3 安装 Playwright 和 Chromium
+### 7.3 安装 Playwright 和 Chromium
 
 ```bash
 cd /opt/markit/app
@@ -217,7 +345,7 @@ ldd /root/.cache/ms-playwright/chromium-*/chrome-linux64/chrome | grep "not foun
 dnf install -y <缺失的库>
 ```
 
-### 6.4 nginx 配置
+### 7.4 nginx 配置
 
 `/etc/nginx/conf.d/markit.conf`：
 
@@ -251,7 +379,7 @@ server {
 }
 ```
 
-### 6.5 systemd 服务
+### 7.5 systemd 服务
 
 `/etc/systemd/system/markit.service`：
 
@@ -279,11 +407,11 @@ systemctl daemon-reload
 systemctl enable --now markit
 ```
 
-### 6.6 环境配置文件
+### 7.6 环境配置文件
 
-`/etc/markit/markit.env` — 参见第 3 节。
+`/etc/markit/markit.env` — 参见第 4 节。
 
-## 7. 服务访问入口
+## 8. 服务访问入口
 
 ### STGW（腾讯云 CLB）
 
@@ -302,7 +430,7 @@ systemctl enable --now markit
 curl http://10.153.48.26:8866/
 ```
 
-## 8. 日志排查
+## 9. 日志排查
 
 ```bash
 # API 服务日志
@@ -319,15 +447,15 @@ tail -f /var/log/nginx/error.log
 journalctl -u markit --since "5 minutes ago"
 ```
 
-## 9. 常见问题
+## 10. 常见问题
 
-### 9.1 前端崩溃 "Cannot read properties of undefined (reading 'id')"
+### 10.1 前端崩溃
 
 原因：`deviceSlots` 中某个 slot 的 `session` 字段为 undefined，但代码直接访问 `.session.id`。
 
 修复：已在 `apps/web/src/App.tsx` 中所有访问点加上 optional chaining（`slot.session?.id`）。部署最新代码后应该解决。
 
-### 9.2 Screencast 卡顿
+### 10.2 Screencast 卡顿
 
 参数在 `apps/server/src/routes/sessions.ts:217`：
 
@@ -340,7 +468,7 @@ await client.send('Page.startScreencast', { format: 'jpeg', quality: 40, everyNt
 - `everyNthFrame` 越大跳帧越多（减少帧率）
 - 如果服务器 CPU 或网络带宽紧张，可以进一步提高 `everyNthFrame`
 
-### 9.3 Playwright Chromium 缺失
+### 10.3 Playwright Chromium 缺失
 
 ```bash
 # 检查安装
@@ -353,7 +481,7 @@ npx playwright install chromium
 
 Rocky Linux 上 `--with-deps` 不可用，需要手动 `dnf` 安装缺失库。
 
-### 9.4 GitLab API 401
+### 10.4 GitLab API 401
 
 检查 token 是否有效：
 
@@ -363,7 +491,7 @@ curl -H "PRIVATE-TOKEN: <token>" https://gitlab.adsconflux.xyz/api/v4/user
 
 如果 token 过期，在 GitLab → Settings → Access Tokens 重新生成。
 
-## 10. 关键 API 端点
+## 11. 关键 API 端点
 
 | 端点 | 说明 |
 |---|---|
