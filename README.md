@@ -26,6 +26,7 @@ pnpm dev
 ## Handoff
 
 - 当前长期交接与功能总览：`docs/markit-current-handoff.md`
+- 生产部署与运维：`docs/markit-production-deploy.md`
 
 ## Current scope
 
@@ -67,7 +68,7 @@ API：
 - `GET /api/catalog/domains?projectId=...`
 - `GET /api/catalog/resolve?url=...`
 
-创建 session 时 Markit 会保存 `projectSnapshot`。它会固定项目名、域名、repo、branch、assignee/labels 和 catalog 生成时间，后续 catalog 更新不会改写历史 session / bug export。Bug 导出的 `bug.md` / `bug.json` 会带上对应项目信息，方便后续发布 GitLab Issue。批量 `挂到 Wiki Issue 草稿` 当前默认 dry-run 到统一 Hub `ptc/fe/ptc-wiki`，业务 repo / issue project / branch / assignee suggestion 会保留在 issue body 和 `.markit/issue-drafts/*` payload 中。`真实挂 Wiki Issue` 会调用 GitLab API 创建到 `ptc/fe/ptc-wiki`，返回 GitLab `web_url` 和 `/-/work_items/:iid` 路径；无项目绑定的 Bug 也进入同一 Hub，并带 `Binding Status: unbound` 与 `unbound-project` label。真实挂载会先上传 annotated screenshot、crop 和对比截图到 GitLab project uploads，再把返回的 Markdown 写进 issue body；本地 `.markit/issue-drafts/*/submitted.json` 会用于防止同一 Bug 重复创建。
+创建 session 时 Markit 会保存 `projectSnapshot`。它会固定项目名、域名、repo、branch、assignee/labels 和 catalog 生成时间，后续 catalog 更新不会改写历史 session / bug export。Bug 导出的 `bug.md` / `bug.json` 会带上对应项目信息，方便后续发布 GitLab Issue。批量 `挂到 Wiki Issue 草稿` 当前默认 dry-run 到统一 Hub `ptc/fe/ptc-wiki`，业务 repo / issue project / branch / assignee suggestion 会保留在 issue body 和 `.markit/issue-drafts/*` payload 中。`真实挂 Wiki Issue` 会调用 GitLab API 创建到 `ptc/fe/ptc-wiki`，返回 GitLab `web_url` 和 `/-/work_items/:iid` 路径；无项目绑定的 Bug 也进入同一 Hub，并带 `Binding Status: unbound` 与 `unbound-project` label。真实挂载会先上传 annotated screenshot、crop 和对比截图到 GitLab project uploads，再把返回的 Markdown 写进 issue body；issue body 也会包含 `markit.gitlab-issue.v1` 隐藏 metadata，labels 会追加 `project:*`、`service:*`、`repo:*`、`domain:*` 和 `type:*`，避免只靠域名判断项目。本地 `.markit/issue-drafts/*/submitted.json` 会用于防止同一 Bug 重复创建。
 
 负责人选择顺序已经留好扩展口：
 
@@ -93,6 +94,20 @@ MARKIT_GITLAB_BASE_URL=https://gitlab.adsconflux.xyz
 MARKIT_GITLAB_AUTH=token
 MARKIT_GITLAB_TOKEN=...
 MARKIT_CATALOG_ROOT=/Users/xin/ptc-wiki MARKIT_AI_PROVIDER=mock pnpm dev
+```
+
+如果要在 GitLab Work Item 创建成功后同步到飞书 Base，开启 `MARKIT_FEISHU_SYNC=1`。默认 `MARKIT_FEISHU_AUTH=auto`：优先使用 Feishu/Lark access token；没有 token 时会调用本机 `lark-cli api --as user` 登录态，方便本地实测。默认写入当前项目问题表：app `I7m2bnPDgaYnwksqp1jcmmW9nOd`、table `tbl0yrCubWcpZCvw`。当前版本写文本字段：`域名或模板名称`、`问题现象`、`链接`、`优先级`、`项目状态`、`comment`、`备注`；也会把 GitLab 已上传的本地截图证据追加到 `附件` 字段，默认 field ID 是 `fldKBwIUX2`。飞书 `负责人` 是 user 字段，使用 `MARKIT_FEISHU_OWNER_OPEN_IDS` 写 open_id；宋鑫当前是 `ou_30c6391467af3f8ffb00e07bac50b368`。
+
+当前实测 `lark-cli --as bot` 可以读取 Base 和字段，但创建 record 会返回 `91403 you don't have permission`；服务器默认先用 `MARKIT_FEISHU_CLI_AS=user` 或 access token，等 bot 被授予 Base 写权限后再切到 `bot`。
+
+```bash
+MARKIT_FEISHU_SYNC=1
+MARKIT_FEISHU_ACCESS_TOKEN=...
+# or rely on local lark-cli auth:
+MARKIT_FEISHU_AUTH=auto
+MARKIT_FEISHU_CLI_AS=user
+MARKIT_FEISHU_ATTACHMENT_FIELD_ID=fldKBwIUX2
+MARKIT_FEISHU_OWNER_OPEN_IDS=ou_30c6391467af3f8ffb00e07bac50b368
 ```
 
 ## AI normalizer
