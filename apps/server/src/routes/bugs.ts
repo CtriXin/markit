@@ -550,6 +550,23 @@ async function submitIssueDraftUnlocked(context: ServerContext, bugIds: string[]
     submissions
   };
   await writeFile(submitPath, JSON.stringify({ schema: 'markit.gitlab-issue-submit.v1', ...result }, null, 2));
+  // Provenance writeback (docs/atom-output-contract.md): exportBug ran during
+  // writeIssueDraft BEFORE the GitLab issue existed, so requirement-atoms.json was
+  // written with source.ref = null. submitted.json now persists the iid (+ any
+  // Feishu attachment tokens), which existingSubmissionsForBugs reads back — so
+  // re-export each submitted bug to stamp gl:<iid> / feishu:<token> into the atom
+  // ledger (exports/<bugId>/requirement-atoms.json, a stable path it overwrites).
+  // Best-effort: the submit already succeeded; a writeback failure must not fail it.
+  const writebackBugIds = [...new Set(
+    submissions.map((submission) => (submission as { bugId?: string }).bugId).filter((bugId): bugId is string => Boolean(bugId))
+  )];
+  for (const bugId of writebackBugIds) {
+    try {
+      await exportBug(context, bugId);
+    } catch (error) {
+      console.warn(`requirement-atoms provenance writeback failed for ${bugId}: ${String(error)}`);
+    }
+  }
   return { ...result, submitPath };
 }
 
@@ -1721,7 +1738,7 @@ function anchorValueForAnnotation(
   return geometryLabel(rect);
 }
 
-function requirementAtomLedgerFromDetail(
+export function requirementAtomLedgerFromDetail(
   detail: Awaited<ReturnType<typeof bugDetail>>,
   groups: Map<string, Row[]>
 ): RequirementAtomLedger {

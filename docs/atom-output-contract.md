@@ -94,7 +94,30 @@ exportBug()
 
 与现有的 `bug.json`、`agent-packet.json`、`atomic-acceptance.md` 并存，不破坏现有结构。
 
-函数：`requirementAtomLedgerFromDetail(detail, groups, captureMap)` — 见 `apps/server/src/routes/bugs.ts`。
+函数：`requirementAtomLedgerFromDetail(detail, groups)` — 见 `apps/server/src/routes/bugs.ts`。
+
+---
+
+## Provenance 回写机制（已实现 + 测试锁定）
+
+`exportBug()` 在 `writeIssueDraft` 阶段跑，**早于** GitLab issue 创建，所以首次写出的 `requirement-atoms.json` 里 `source_ref` / `atoms[].source.ref` 都是 `null`（此时还没有 iid，**不臆造**）。
+
+回写时机与路径：
+
+```
+submitIssueDraftUnlocked()
+  └─ submitGitLabIssues()            → 拿到 iid（+ maybeSyncFeishuIssue 拿到 attachmentFileTokens）
+       └─ 写 submitted.json          → 持久化 submission（issue-drafts/<stamp>/submitted.json）
+            └─ exportBug(bugId) 重跑  → bugDetail 经 existingSubmissionsForBugs 读回 submitted.json
+                 └─ requirementAtomLedgerFromDetail 此时见到 issueSubmission
+                      → 覆盖写 exports/<bugId>/requirement-atoms.json（路径固定，无 stale 副本）
+                      → source_ref = gl:<iid>、每条 atom.source.ref = gl:<iid>、evidence_refs = [feishu:<token>]
+```
+
+- 回写是 **best-effort**：submit 已成功，回写失败只 `console.warn`，不回滚 submit。
+- 行为锁在 `apps/server/tests/requirement-atoms.test.ts`：有 submission → `gl:<iid>` + `feishu:<token>`；无 submission → `null` / `[]`。
+
+> 即：本规范第 20 / 23 / 33 行"提交后自动写入"由上面的 re-export 实现，**不是只写在文档里的承诺**。
 
 ---
 
