@@ -1,0 +1,47 @@
+{
+  "schema": "requirement_atom.v1",
+  "source_ref": "gl:42",
+  "task_summary": "答案之书首页标注问题修复",
+  "atoms": [
+    {
+      "id": "MKT-9bb5de9a-A01",
+      "source": {
+        "kind": "markit-annotation",
+        "ref": "gl:42",
+        "quote": "价格字重应为 500 / 600，当前 400 偏细",
+        "anchor": {
+          "type": "element",
+          "value": "[data-testid='price-tag']",
+          "route": "https://answersbook.online/catalog",
+          "viewport": "desktop"
+        }
+      },
+      "intent": "价格字重应为 500 / 600，当前 400 偏细",
+      "severity": "P1",
+      "assertion": null,
+      "evidence_required": false,
+      "status": "pending",
+      "evidence_refs": []
+    },
+    {
+      "id": "MKT-9bb5de9a-A02",
+      "source": {
+        "kind": "markit-annotation",
+        "ref": "gl:42",
+        "quote": "移动端导航栏高度塌缩为 40px，应为 56px",
+        "anchor": {
+          "type": "rect",
+          "value": "x0 y0 w390 h40",
+          "route": "https://answersbook.online/",
+          "viewport": "mobile"
+        }
+      },
+      "intent": "移动端导航栏高度塌缩为 40px，应为 56px",
+      "severity": "P2",
+      "assertion": null,
+      "evidence_required": false,
+      "status": "pending",
+      "evidence_refs": []
+    }
+  ]
+}
