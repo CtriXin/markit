@@ -466,6 +466,7 @@ async function exportBug(context: ServerContext, id: string) {
   await writeFile(join(exportDir, 'atomic-acceptance.md'), renderAtomicAcceptanceMarkdown(acceptanceRows, detail.bug.title));
   await writeFile(join(exportDir, 'agent-packet.json'), JSON.stringify(agentPacketFromDetail(detail, acceptanceRows), null, 2));
   await writeFile(join(exportDir, 'bug.json'), JSON.stringify({ ...detail, atomicAcceptance: acceptanceRows }, null, 2));
+  await writeFile(join(exportDir, 'requirement-atoms.json'), JSON.stringify(requirementAtomLedgerFromDetail(detail, groups), null, 2));
   context.database.db.run('UPDATE bugs SET export_path = ?, updated_at = ? WHERE id = ?', [exportDir, nowIso(), id]);
   return { exportPath: exportDir, markdown };
 }
@@ -1663,6 +1664,137 @@ function agentPacketFromDetail(detail: Awaited<ReturnType<typeof bugDetail>>, ro
     atomicAcceptance: rows,
     captures: detail.captures,
     assets: detail.assets
+  };
+}
+
+// ── requirement_atom.v1 projection ──────────────────────────────────────────
+// Maps each Markit annotation to a requirement_atom.v1 atom (shared spine).
+// Human minimal core: anchor (non-whole-page) + intent + severity.
+// assertion is always null here (AI pre-fills at verify-time or via normalizer).
+// Spec: docs/atom-output-contract.md
+type RequirementAtomAnchorType = 'element' | 'region' | 'rect' | 'pin' | 'page';
+
+type RequirementAtom = {
+  id: string;
+  source: {
+    kind: 'markit-annotation';
+    ref: string | null;
+    quote: string;
+    anchor: {
+      type: RequirementAtomAnchorType;
+      value: string;
+      route: string | null;
+      viewport: 'desktop' | 'mobile' | 'both' | null;
+    };
+  };
+  intent: string;
+  severity: string;
+  assertion: null;
+  evidence_required: false;
+  status: 'pending';
+  evidence_refs: string[];
+};
+
+type RequirementAtomLedger = {
+  schema: 'requirement_atom.v1';
+  source_ref: string | null;
+  task_summary: string | null;
+  atoms: RequirementAtom[];
+};
+
+function anchorTypeForAnnotationKind(kind: string): RequirementAtomAnchorType {
+  if (kind === 'element') return 'element';
+  if (kind === 'pin') return 'pin';
+  if (kind === 'section') return 'region';
+  return 'rect'; // rect, ellipse, freehand → rect
+}
+
+function anchorValueForAnnotation(
+  kind: string,
+  geometry: { captureRect?: { x: number; y: number; width: number; height: number } },
+  target: Record<string, unknown> | undefined,
+  note: string
+): string {
+  if (kind === 'element' && target?.selector) return String(target.selector);
+  if (kind === 'section') return note || '截图区域';
+  const rect = geometry.captureRect ?? { x: 0, y: 0, width: 0, height: 0 };
+  return geometryLabel(rect);
+}
+
+function requirementAtomLedgerFromDetail(
+  detail: Awaited<ReturnType<typeof bugDetail>>,
+  groups: Map<string, Row[]>
+): RequirementAtomLedger {
+  const bug = detail.bug as {
+    id: string;
+    title: string;
+    actual: string;
+    expected: string;
+    severity: string;
+    finalUrl: string;
+    issueSubmission?: { iid?: number; feishuSync?: { attachmentFileTokens?: string[] } };
+  };
+  const captureById = new Map(
+    (detail.captures as Array<{ id: string; finalUrl?: string; url?: string; viewport?: { isMobile?: boolean } }>).map((c) => [c.id, c])
+  );
+  const rowById = new Map([...groups.values()].flat().map((row) => [String(row.id), row]));
+
+  const shortId = bug.id.replace('bug_', '').slice(0, 8);
+  const issueIid = bug.issueSubmission?.iid;
+  const sourceRef = issueIid ? `gl:${issueIid}` : null;
+  const feishuTokens = bug.issueSubmission?.feishuSync?.attachmentFileTokens ?? [];
+
+  const atoms: RequirementAtom[] = (
+    detail.annotations as Array<{
+      id: string;
+      captureId: string;
+      kind: string;
+      note?: string;
+      geometry?: { captureRect?: { x: number; y: number; width: number; height: number } };
+      target?: Record<string, unknown>;
+    }>
+  ).map((annotation, index) => {
+    const raw = rowById.get(annotation.id);
+    const target = (annotation.target ?? parseJson(raw?.target_json, undefined)) as Record<string, unknown> | undefined;
+    const geometry = annotation.geometry ?? parseJson<{ captureRect?: { x: number; y: number; width: number; height: number } }>(raw?.geometry_json, {});
+    const capture = captureById.get(annotation.captureId);
+    const note = firstNonEmpty(annotation.note ?? '', bug.title);
+    const anchorType = anchorTypeForAnnotationKind(annotation.kind);
+    const anchorValue = anchorValueForAnnotation(annotation.kind, geometry, target, note);
+    const route = firstNonEmpty(capture?.finalUrl ?? '', capture?.url ?? '', bug.finalUrl) || null;
+    const viewport = capture?.viewport?.isMobile ? 'mobile' : 'desktop';
+    const atomId = `MKT-${shortId}-${annotationCode(index)}`;
+    const evidenceRefs = feishuTokens.length
+      ? feishuTokens.map((t) => `feishu:${t}`)
+      : [];
+
+    return {
+      id: atomId,
+      source: {
+        kind: 'markit-annotation',
+        ref: sourceRef,
+        quote: note,
+        anchor: {
+          type: anchorType,
+          value: anchorValue,
+          route,
+          viewport
+        }
+      },
+      intent: note,
+      severity: bug.severity,
+      assertion: null,
+      evidence_required: false,
+      status: 'pending',
+      evidence_refs: evidenceRefs
+    };
+  });
+
+  return {
+    schema: 'requirement_atom.v1',
+    source_ref: sourceRef,
+    task_summary: bug.title,
+    atoms
   };
 }
 
